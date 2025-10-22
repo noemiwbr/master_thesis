@@ -3,3 +3,6 @@ __pycache__/
 checkpoints/
 data/
 .DS_Store
+.vscode/
+*.sh
+*.csv

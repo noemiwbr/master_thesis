@@ -179,3 +179,56 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
     # Likelihood
     with numpyro.plate("data", N):
         numpyro.sample("Y", dist.Normal(y_pred, sigma_obs), obs=Y)
+
+
+
+
+def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
+    """
+    X.shape: [N, S, F]
+    site_meta.shape: [S, D_meta]
+    Y.shape: [N]
+    D_emb: embedding dimension per site
+    """
+    N, S, F = X.shape
+    D_meta = sites_meta.shape[-1]
+
+    # Bayesian linear layer: sites_meta -> site_emb
+    w_meta = numpyro.sample("w_meta", dist.Normal(0, 1).expand([D_meta, D_emb]).to_event(2))
+    b_meta = numpyro.sample("b_meta", dist.Normal(0, 1).expand([D_emb]).to_event(1))
+
+    sites_emb = jnp.dot(sites_meta, w_meta) + b_meta  # [S, D_emb]
+    sites_emb_batched = jnp.broadcast_to(sites_emb[None, :, :], (N, S, D_emb))
+
+    # Concatenate embeddings to input features -> [N, S, F + D_emb]
+    X_aug = jnp.concatenate([X, sites_emb_batched], axis=-1)
+    F_aug = F + D_emb
+
+    # First layer weights
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, D_H]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+
+    # Second layer weights
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+
+    # Final layer
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, D_Y]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([D_Y]).to_event(1))
+
+    # Observation precision prior
+    prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
+    sigma_obs = 1.0 / jnp.sqrt(prec_obs)
+
+    # Forward pass
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X_aug, w1) + b1)     # [N, S, D_H]
+    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)        # [N, S, D_H]
+    out = jnp.einsum("nsh,hd->nsd", z2, w3) + b3               # [N, S, D_Y]
+    out = out.squeeze(-1)                                      # [N, S]
+
+    # Aggregate
+    y_pred = out.sum(axis=1)  # [N]
+
+    # Likelihood
+    with numpyro.plate("data", N):
+        numpyro.sample("Y", dist.Normal(y_pred, sigma_obs), obs=Y)

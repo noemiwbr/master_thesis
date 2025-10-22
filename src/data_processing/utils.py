@@ -53,7 +53,7 @@ def load_latest_checkpoint(model_name, dir_path="../checkpoints"):
 
 
 
-# Inference helper
+# Inference helper for basic BNN
 def run_inference_bnn(model, args, rng_key, X, Y, D_H):
     start = time.time()
     kernel = NUTS(model)
@@ -72,7 +72,7 @@ def run_inference_bnn(model, args, rng_key, X, Y, D_H):
 
 
 
-# Posterior predictive
+# Posterior predictive for basic BNN
 def predict_bnn(model, rng_key, samples, X, D_H):
     model = handlers.substitute(handlers.seed(model, rng_key), samples)
     trace = handlers.trace(model).get_trace(X=X, Y=None, D_H=D_H)

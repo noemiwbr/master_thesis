@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from data.downtime import CapacityFactorTransformer
+from data_processing.downtime import CapacityFactorTransformer
 
 def filter_bid_zone(windparks, bid_zone: str):
     # Agg because windparks can have several eic_codes
@@ -71,12 +71,12 @@ def capacity_factor(bid_zone, windpower_in_bid_zone):
 def split_train_test_meta(weather_in_bid_zone, windpower_in_bid_zone, feature_cols, site_meta_cols, split_time):
 
     columns = windpower_in_bid_zone.columns
+    # TODO use inverted masks for split
     train_mask_power = windpower_in_bid_zone.index < split_time
     test_mask_power  = windpower_in_bid_zone.index >= split_time
     train_mask_weather = weather_in_bid_zone.index.get_level_values('time') < split_time
     test_mask_weather = weather_in_bid_zone.index.get_level_values('time') >= split_time
 
-    #TODO might be same masks, check that
     df_train_X = weather_in_bid_zone.loc[train_mask_weather, feature_cols].copy()
     df_test_X  = weather_in_bid_zone.loc[test_mask_weather, feature_cols].copy()
 
