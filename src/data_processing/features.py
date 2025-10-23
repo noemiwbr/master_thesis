@@ -43,9 +43,18 @@ def scale_features(train_df, test_df, scale_cols):
 # MultiIndex (timestamp, wind park) and feature columns -> np array with shape (timestamps, wind parks, features)
 def get_input_shaped(X_df, feature_cols):
     # TODO aren't feature cols just the columns of the X_df??
+    X_df = X_df.sort_index(level=[0, 1])
+
     timestamps = X_df.index.get_level_values(0).unique()
-    num_windparks = len(X_df.index.get_level_values(1).unique())
+    windparks = X_df.index.get_level_values(1).unique()
+
+    num_windparks = len(windparks)
     num_features = len(feature_cols)
+
+    # Sanity check: full grid present
+    expected_len = len(timestamps) * num_windparks
+    assert len(X_df) == expected_len
+
     X_np = X_df[feature_cols].to_numpy(dtype=jnp.float32)
     X_np = X_np.reshape(len(timestamps), num_windparks, num_features)
     return X_np

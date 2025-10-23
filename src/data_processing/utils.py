@@ -4,7 +4,8 @@ from datetime import datetime
 from glob import glob
 import time
 from numpyro import handlers
-from numpyro.infer import MCMC, NUTS
+from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
+from numpyro.optim import Adam
 
 
 def save_checkpoint(samples, model_name="bnn", args=None, rng_key=None,
@@ -77,3 +78,15 @@ def predict_bnn(model, rng_key, samples, X, D_H):
     model = handlers.substitute(handlers.seed(model, rng_key), samples)
     trace = handlers.trace(model).get_trace(X=X, Y=None, D_H=D_H)
     return trace["Y"]["value"]
+
+
+
+def run_svi(model, guide, rng_key, X_train, Y_train, optimizer=Adam, lr=1e-3, num_steps=5000):
+    optimizer = optimizer(lr)
+    svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
+
+    svi_result = svi.run(rng_key, num_steps, X_train, Y_train, progress_bar=False)
+
+    losses = svi_result.losses
+    print(f"Final ELBO loss: {losses[-1]:.3f}")
+    return svi_result

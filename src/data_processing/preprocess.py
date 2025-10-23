@@ -21,18 +21,25 @@ def align_windpower_and_weather(windpower, weather):
 
 def merge_metadata(weather_in_bid_zone, windparks_in_bid_zone):
     # Merge weather data with meta information (operating_power_max, prod_start_new)
-    weather_in_bid_zone_merged = weather_in_bid_zone.merge(
-        windparks_in_bid_zone.reset_index().rename(columns={'index': 'windpark_id'})[
-            ['substation_name', 'windpark_id', 'operating_power_max', 'prod_start_new']
-        ],
-        left_on='windpark',
-        right_on='substation_name',
-        how='left'
-    )
-    weather_in_bid_zone_merged = weather_in_bid_zone_merged.set_index(weather_in_bid_zone.index).drop(columns=['substation_name', 'wind_direction_10m'])
-    return weather_in_bid_zone_merged
 
-def full_multiindex(weather_in_bid_zone, windparks_in_bid_zone):
+    valid_windparks = windparks_in_bid_zone['substation_name'].unique()
+
+    filtered_weather = weather_in_bid_zone[
+        weather_in_bid_zone['windpark'].isin(valid_windparks)
+    ]
+
+    result = filtered_weather.merge(
+    windparks_in_bid_zone.reset_index().rename(columns={'index': 'windpark_id'})[
+        ['substation_name', 'windpark_id', 'operating_power_max', 'prod_start_new']
+    ],
+    left_on='windpark',
+    right_on='substation_name',
+    how='left'
+    ).set_index(filtered_weather.index).drop(columns=['substation_name', 'wind_direction_10m'])
+    return result
+
+
+def multiindex(weather_in_bid_zone, windparks_in_bid_zone):
     weather_in_bid_zone.index.name = 'time'
     weather_in_bid_zone = (
         weather_in_bid_zone
@@ -40,11 +47,12 @@ def full_multiindex(weather_in_bid_zone, windparks_in_bid_zone):
         .sort_index()
     )
     # Fill missing windpark–time combinations (full multi index) to include all combinations
-    all_times = weather_in_bid_zone.index.get_level_values('time').unique()
-    all_windparks = windparks_in_bid_zone['substation_name'].unique()
-    full_index = pd.MultiIndex.from_product([all_times, all_windparks], names=['time', 'windpark'])
+    # TODO is this necessary??
+    # all_times = weather_in_bid_zone.index.get_level_values('time').unique()
+    # all_windparks = windparks_in_bid_zone['substation_name'].unique()
+    # full_index = pd.MultiIndex.from_product([all_times, all_windparks], names=['time', 'windpark'])
     
-    weather_in_bid_zone = weather_in_bid_zone.reindex(full_index)
+    # weather_in_bid_zone = weather_in_bid_zone.reindex(full_index)
 
     # Set operating_power_max = NaN for windparks not yet operational
     for _, row in windparks_in_bid_zone.iterrows():
@@ -65,7 +73,7 @@ def capacity_factor(bid_zone, windpower_in_bid_zone):
         'generation': gen,
         'available_capacity': avail,
         'capacity_factor': cf
-    }).dropna().sort_index()
+    })
 
 
 def split_train_test_meta(weather_in_bid_zone, windpower_in_bid_zone, feature_cols, site_meta_cols, split_time):
