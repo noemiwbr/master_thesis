@@ -1,3 +1,4 @@
+# This file was copied from EquiWindNerds
 import logging
 import os
 import re
