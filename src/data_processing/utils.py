@@ -32,22 +32,26 @@ def save_checkpoint(samples, model_name="bnn", args=None, rng_key=None,
     return path
 
 
-# TODO explicit name
-def load_latest_checkpoint(model_name, dir_path="../checkpoints"):
+def load_checkpoint(model_name=None, file_name=None, dir_path="../checkpoints"):
 
-    pattern = os.path.join(dir_path, f"{model_name}_*.pkl")
-    files = glob(pattern)
+    if file_name is not None:
+        path_to_ckp = os.path.join(dir_path, f"{file_name}.pkl")
+        print(f"Loading specified checkpoint: {path_to_ckp}")
 
-    if not files:
-        raise FileNotFoundError(f"No checkpoint files found for model '{model_name}' in '{dir_path}'")
+    else: 
+        pattern = os.path.join(dir_path, f"{model_name}_*.pkl")
+        files = glob(pattern)
 
-    # Sort by modification time and pick the latest
-    files.sort(key=os.path.getmtime)
-    latest_path = files[-1]
+        if not files:
+            raise FileNotFoundError(f"No checkpoint files found for model '{model_name}' in '{dir_path}'")
 
-    print(f"Loading latest checkpoint for '{model_name}': {latest_path}")
+        # Sort by modification time and pick the latest
+        files.sort(key=os.path.getmtime)
+        path_to_ckp = files[-1]
 
-    with open(latest_path, "rb") as f:
+        print(f"Loading latest checkpoint: {path_to_ckp}")
+
+    with open(path_to_ckp, "rb") as f:
         state = pickle.load(f)
 
     return state
