@@ -85,8 +85,7 @@ def model(X, Y=None):
     b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([1]).to_event(1))
 
     # Observation noise
-    prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
-    sigma_obs = 1.0 / jnp.sqrt(prec_obs)
+    alpha = numpyro.sample("alpha", dist.Exponential(1.0))  # shape > 0
 
     # Forward pass
     # [N, S, F] -> [N, S, D_H]
@@ -100,11 +99,15 @@ def model(X, Y=None):
 
     # Aggregate across sites
     y_pred = out.sum(axis=1)  # [N]
+    # y_pred = jnp.clip(y_pred, 1e-6, None) 
 
-    # Likelihood
+    # Mean of the Gamma is alpha / beta, so set beta accordingly
+    beta = alpha / y_pred #(y_pred + 1e-6)  # rate (inverse scale)
+
+    # Likelihood:  Y ~ Gamma(alpha, beta) 
     with numpyro.plate("data", N):
-        numpyro.sample("Y", dist.Normal(y_pred, sigma_obs), obs=Y) # TODO Log Normal, Chi, Gamma, non negative
-
+        numpyro.sample("Y", dist.Gamma(alpha, beta), obs=Y) # TODO Log Normal, Chi, Gamma, non negative
+        
 
 def bnn_uninformed_embeddings(X, Y=None, D_emb=4):
     """
