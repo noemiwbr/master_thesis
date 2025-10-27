@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
@@ -5,14 +6,37 @@ import torch
 from torch import nn
 
 
+class WindPowerModel_simple(nn.Module):
+    def __init__(self, num_features):
+        super().__init__()
+        self.shared_mlp = nn.Sequential(
+            nn.Linear(num_features, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, 1)
+        )
+
+    def forward(self, x):
+        """
+        x: [timesteps, num_sites, num_features]  (weather data)
+        """
+        y_site = self.shared_mlp(x).squeeze(-1) # [timesteps, num_sites, 1]
+        y_sum = y_site.sum(dim=1) # [timesteps]
+        
+        return y_site, y_sum
+    
+
 class WindPowerModel(nn.Module):
     def __init__(self, num_sites, num_features, embed_dim, site_meta_dim):
         super().__init__()
         self.site_embeddings = nn.Embedding(num_sites, embed_dim)
         self.shared_mlp = nn.Sequential(
-            nn.Linear(num_features + embed_dim + site_meta_dim, 32),
+            nn.Linear(num_features + embed_dim + site_meta_dim, 16),
             nn.ReLU(),
-            nn.Linear(32, 1),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, 1),
         )
 
     def forward(self, x, site_meta):
@@ -37,11 +61,11 @@ class WindPowerModel(nn.Module):
     
 # Nonlinearity
 def nonlin(x):
-    return jnp.tanh(x)
+    return jax.nn.relu(x)
 
 
 # Bayesian NN
-def model(X, Y=None, D_H=32, D_Y=1):
+def model(X, Y=None):
     """
     X.shape: [N, S, F] (timesteps, num_sites, num_features)
     Y.shape: [N], total power (scalar per timestamp)
@@ -49,16 +73,16 @@ def model(X, Y=None, D_H=32, D_Y=1):
     N, S, F = X.shape
 
     # First layer weights
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F, D_H]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
 
     # # Second layer weights
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
 
     # Final layer
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, D_Y]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([D_Y]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, 1]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([1]).to_event(1))
 
     # Observation noise
     prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
@@ -68,9 +92,9 @@ def model(X, Y=None, D_H=32, D_Y=1):
     # [N, S, F] -> [N, S, D_H]
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     # [N, S, D_H] -> [N, S, D_H]
-    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
     # [N, S, D_H] ->[N, S, D_Y]
-    out = jnp.einsum("nsh,hd->nsd", z2, w3) + b3
+    out = jnp.einsum("nsg,gd->nsd", z2, w3) + b3
     # [N, S, D_Y] -> [N, S]
     out = out.squeeze(-1)  
 
@@ -82,7 +106,7 @@ def model(X, Y=None, D_H=32, D_Y=1):
         numpyro.sample("Y", dist.Normal(y_pred, sigma_obs), obs=Y) # TODO Log Normal, Chi, Gamma, non negative
 
 
-def bnn_uninformed_embeddings(X, Y=None, D_H=32, D_Y=1, D_emb=4):
+def bnn_uninformed_embeddings(X, Y=None, D_emb=4):
     """
     X.shape: [N, S, F]
     Y.shape: [N]
@@ -100,16 +124,16 @@ def bnn_uninformed_embeddings(X, Y=None, D_H=32, D_Y=1, D_emb=4):
     F_aug = F + D_emb
 
     # First layer weights
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, D_H]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
 
     # Second layer weights
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
 
     # Final layer
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, D_Y]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([D_Y]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, 1]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([1]).to_event(1))
 
     # Observation precision prior
     prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
@@ -117,8 +141,8 @@ def bnn_uninformed_embeddings(X, Y=None, D_H=32, D_Y=1, D_emb=4):
 
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X_aug, w1) + b1)     # [N, S, D_H]
-    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)        # [N, S, D_H]
-    out = jnp.einsum("nsh,hd->nsd", z2, w3) + b3               # [N, S, D_Y]
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)        # [N, S, D_H]
+    out = jnp.einsum("nsg,gd->nsd", z2, w3) + b3               # [N, S, D_Y]
     out = out.squeeze(-1)                                      # [N, S]
 
     # Aggregate
@@ -130,7 +154,7 @@ def bnn_uninformed_embeddings(X, Y=None, D_H=32, D_Y=1, D_emb=4):
 
 
 
-def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
+def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4):
     """
     X.shape: [N, S, F]
     site_meta.shape: [S, D_meta]
@@ -152,16 +176,16 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
     F_aug = F + D_emb
 
     # First layer weights
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, D_H]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
 
     # Second layer weights
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
 
     # Final layer
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, D_Y]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([D_Y]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, 1]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([1]).to_event(1))
 
     # Observation precision prior
     prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
@@ -169,8 +193,8 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
 
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X_aug, w1) + b1)     # [N, S, D_H]
-    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)        # [N, S, D_H]
-    out = jnp.einsum("nsh,hd->nsd", z2, w3) + b3               # [N, S, D_Y]
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)        # [N, S, D_H]
+    out = jnp.einsum("nsg,gd->nsd", z2, w3) + b3               # [N, S, D_Y]
     out = out.squeeze(-1)                                      # [N, S]
 
     # Aggregate
@@ -183,7 +207,7 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
 
 
 
-def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
+def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4):
     """
     X.shape: [N, S, F]
     site_meta.shape: [S, D_meta]
@@ -205,16 +229,16 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
     F_aug = F + D_emb
 
     # First layer weights
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, D_H]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F_aug, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
 
     # Second layer weights
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
 
     # Final layer
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, D_Y]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([D_Y]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, 1]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([1]).to_event(1))
 
     # Observation precision prior
     prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
@@ -222,8 +246,8 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
 
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X_aug, w1) + b1)     # [N, S, D_H]
-    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)        # [N, S, D_H]
-    out = jnp.einsum("nsh,hd->nsd", z2, w3) + b3               # [N, S, D_Y]
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)        # [N, S, D_H]
+    out = jnp.einsum("nsg,gd->nsd", z2, w3) + b3               # [N, S, D_Y]
     out = out.squeeze(-1)                                      # [N, S]
 
     # Aggregate
@@ -235,7 +259,7 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_H=32, D_Y=1, D_emb=4):
 
 
 
-def quantile_bnn_model(X, Y=None, D_H=32, quantiles=(0.05, 0.5, 0.95), nonlin=jnp.tanh):
+def quantile_bnn_model(X, Y=None, quantiles=(0.05, 0.5, 0.95), nonlin=jnp.tanh):
     """
     X.shape: [N, S, F] (timestamps, num_sites, num_features)
     Y.shape: [N] (scalar per timestamp)
@@ -243,13 +267,13 @@ def quantile_bnn_model(X, Y=None, D_H=32, quantiles=(0.05, 0.5, 0.95), nonlin=jn
     N, S, F = X.shape
     Q = len(quantiles)
 
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F, D_H]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
 
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([D_H, D_H]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([D_H]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
 
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([D_H, Q]).to_event(2))
+    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, Q]).to_event(2))
     b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([Q]).to_event(1))
 
     scale = numpyro.sample("scale", dist.Exponential(1.0))
@@ -257,9 +281,9 @@ def quantile_bnn_model(X, Y=None, D_H=32, quantiles=(0.05, 0.5, 0.95), nonlin=jn
     # [N, S, F] -> [N, S, D_H]
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     # [N, S, D_H] -> [N, S, D_H]
-    z2 = nonlin(jnp.einsum("nsh,hh->nsh", z1, w2) + b2)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
     # [N, S, D_H] -> [N, S, Q]
-    out = jnp.einsum("nsh,hq->nsq", z2, w3) + b3
+    out = jnp.einsum("nsg,gq->nsq", z2, w3) + b3
     # Aggregate across sites: [N, S, Q] -> [N, Q]
     y_pred_q = out.sum(axis=1)
 

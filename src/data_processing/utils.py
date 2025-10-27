@@ -57,9 +57,9 @@ def load_checkpoint(model_name=None, file_name=None, dir_path="../checkpoints"):
     return state
 
 
-
+# TODO more generic, should be possible to have quanitles as argument
 # Inference helper for basic BNN
-def run_inference_bnn(model, args, rng_key, X, Y, D_H):
+def run_inference_bnn(model, args, rng_key, X, Y):
     start = time.time()
     kernel = NUTS(model)
     mcmc = MCMC(
@@ -70,7 +70,7 @@ def run_inference_bnn(model, args, rng_key, X, Y, D_H):
         chain_method="parallel",
         progress_bar=True,
     )
-    mcmc.run(rng_key, X=X, Y=Y, D_H=D_H)
+    mcmc.run(rng_key, X=X, Y=Y)
     mcmc.print_summary()
     print("\nMCMC elapsed time:", time.time() - start)
     return mcmc.get_samples()
@@ -78,9 +78,9 @@ def run_inference_bnn(model, args, rng_key, X, Y, D_H):
 
 
 # Posterior predictive for basic BNN
-def predict_bnn(model, rng_key, samples, X, D_H):
+def predict_bnn(model, rng_key, samples, X):
     model = handlers.substitute(handlers.seed(model, rng_key), samples)
-    trace = handlers.trace(model).get_trace(X=X, Y=None, D_H=D_H)
+    trace = handlers.trace(model).get_trace(X=X, Y=None)
     return trace["Y"]["value"]
 
 
