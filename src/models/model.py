@@ -63,6 +63,50 @@ class WindPowerModel(nn.Module):
 def nonlin(x):
     return jax.nn.relu(x)
 
+def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
+    N, S, F = X.shape
+    w1 = numpyro.sample("w1", dist.Normal(0.,0.5).expand([F,16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.,0.5).expand([16]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0.,0.5).expand([16,8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.,0.5).expand([8]).to_event(1))
+    w3mu = numpyro.sample("w3mu", dist.Normal(0.,0.5).expand([8,1]).to_event(2))
+    b3mu = numpyro.sample("b3mu", dist.Normal(0.,0.5).expand([1]).to_event(1))
+    w3k  = numpyro.sample("w3k",  dist.Normal(0.,0.5).expand([8,1]).to_event(2))
+    b3k  = numpyro.sample("b3k",  dist.Normal(0.,0.5).expand([1]).to_event(1))
+
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+    mu = jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1).sum(axis=1)) + eps
+    k  = jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3k)  + b3k ).squeeze(-1).sum(axis=1)) + 1e-3
+    theta = mu / k
+    with numpyro.plate("data", N):
+        numpyro.sample("Y", dist.Gamma(concentration=k, rate=1./theta), obs=Y)
+
+
+def model_cf_logitnormal(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
+    N, S, F = X.shape
+    w1 = numpyro.sample("w1", dist.Normal(0.,0.5).expand([F,16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.,0.5).expand([16]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0.,0.5).expand([16,8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.,0.5).expand([8]).to_event(1))
+    w3m = numpyro.sample("w3m", dist.Normal(0.,0.5).expand([8,1]).to_event(2))
+    b3m = numpyro.sample("b3m", dist.Normal(0.,0.5).expand([1]).to_event(1))
+    w3s = numpyro.sample("w3s", dist.Normal(0.,0.5).expand([8,1]).to_event(2))
+    b3s = numpyro.sample("b3s", dist.Normal(0.,0.5).expand([1]).to_event(1))
+
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+    m = (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
+    s = (jnp.einsum("nsg,gd->nsd", z2, w3s) + b3s).squeeze(-1).sum(axis=1)
+    sigma = jax.nn.softplus(s) + 1e-3
+
+    if Y is not None:
+        CF_safe = Y*(1-2*eps)+eps
+        y_star = jnp.log(CF_safe) - jnp.log1p(-CF_safe)  # logit
+
+    with numpyro.plate("data", N):
+        numpyro.sample("y_star", dist.Normal(m, sigma), obs=(y_star if Y is not None else None))
+
 
 # Bayesian NN
 def model(X, Y=None):
