@@ -9,7 +9,7 @@ from numpyro.optim import Adam
 
 
 def save_checkpoint(samples, model_name="bnn", args=None, rng_key=None,
-                    dir_path="../../checkpoints", target="gen"):
+                    dir_path="../checkpoints", target="gen"):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
