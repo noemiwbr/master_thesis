@@ -78,8 +78,8 @@ def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
-    mu = jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1).sum(axis=1)) + eps
-    alpha  = jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3k)  + b3k ).squeeze(-1).sum(axis=1)) + 1e-3
+    mu = numpyro.deterministic("mu", jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1).sum(axis=1)) + eps)
+    alpha  = numpyro.deterministic("alpha", jax.nn.softplus((jnp.einsum("nsg,gd->nsd", z2, w3k)  + b3k ).squeeze(-1).sum(axis=1)) + 1e-3)
     rate = alpha / mu
     
     # Likelihood: Y ~ Gamma(k, k/mu) 
@@ -161,7 +161,7 @@ def model(X, Y=None, nonlin=jax.nn.relu):
         numpyro.sample("Y", dist.Gamma(alpha, beta), obs=Y) #non negative
         
 
-def bnn_uninformed_embeddings(X, Y=None, D_emb=4):
+def bnn_uninformed_embeddings(X, Y=None, D_emb=4, nonlin=jax.nn.relu):
     """
     X.shape: [N, S, F]
     Y.shape: [N]
@@ -262,7 +262,7 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4):
 
 
 
-def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4):
+def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4,  nonlin=jax.nn.relu):
     """
     X.shape: [N, S, F]
     site_meta.shape: [S, D_meta]
