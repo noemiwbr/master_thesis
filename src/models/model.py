@@ -347,7 +347,7 @@ def bnn_informed_embeddings(X, sites_meta, Y=None, D_emb=4,  nonlin=jax.nn.relu)
 
 
 
-def quantile_gen_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jnp.tanh):
+def quantile_gen_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jax.nn.relu):
     """
     X.shape: [N, S, F] (timestamps, num_sites, num_features)
     Y.shape: [N] (scalar per timestamp)
@@ -355,32 +355,50 @@ def quantile_gen_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jnp.tanh
     N, S, F = X.shape
     Q = len(quantiles)
 
-    w1 = numpyro.sample("w1", dist.Normal(0, 1).expand([F, 16]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0, 1).expand([16]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0, 0.5).expand([F, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 0.5).expand([16]).to_event(1))
 
-    w2 = numpyro.sample("w2", dist.Normal(0, 1).expand([16, 8]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0, 1).expand([8]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 0.5).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 0.5).expand([8]).to_event(1))
 
-    w3 = numpyro.sample("w3", dist.Normal(0, 1).expand([8, Q]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0, 1).expand([Q]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 0.5).expand([8, Q]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 0.5).expand([Q]).to_event(1))
 
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
-    y_pred_q = (jnp.einsum("nsg,gq->nsq", z2, w3) + b3).sum(axis=1) # [N, Q]
+    # raw predictions per-quantile (before enforcing monotonicity)
+    y_pred_raw = (jnp.einsum("nsg,gq->nsq", z2, w3) + b3).sum(axis=1)  # [N, Q]
 
-    # Likelihood: Y ~ AsymmetricLaplaceQuantile(loc = y_pred_q, scale = 1.0, quantile = q)
+    # Enforce monotonic increasing quantiles per example AND ensure non-negativity:
+    # Apply softplus to base quantile (q0) so it's positive, then add positive increments
+    if Q > 1:
+        q0_raw = y_pred_raw[:, 0:1]  # [N,1]
+        q0 = jax.nn.softplus(q0_raw) + 1e-6  # Ensure base quantile is positive
+        deltas_raw = y_pred_raw[:, 1:]  # [N, Q-1]
+        deltas = jax.nn.softplus(deltas_raw)  # positive increments
+        y_pred_q = jnp.concatenate([q0, q0 + jnp.cumsum(deltas, axis=1)], axis=1)  # [N,Q]
+    else:
+        y_pred_q = jax.nn.softplus(y_pred_raw) + 1e-6
+
+    # Learnable per-quantile scale (positive) so the model can adapt CI widths
+    sigma_q = numpyro.sample("sigma_q", dist.Exponential(1.0).expand([Q]).to_event(1))
+
+    # Save the predicted quantiles as deterministic sites so they can be retrieved
+    for i, q in enumerate(quantiles):
+        numpyro.deterministic(f"quantile_{int(q*100)}", y_pred_q[:, i])
+
+    # Likelihood: use an asymmetric Laplace quantile likelihood per quantile
     with numpyro.plate("data", N):
         for i, q in enumerate(quantiles):
-            # Each quantile gets own ALQ likelihood centered at predicted mean
             numpyro.sample(
                 f"Y_obs_q{int(q*100)}",
                 dist.AsymmetricLaplaceQuantile(
                     loc=y_pred_q[:, i],
-                    scale=1.0,
-                    quantile=q
+                    scale=sigma_q[i],
+                    quantile=q,
                 ),
-                obs=Y
-                )
+                obs=Y,
+            )
             
 
 def quantile_cf_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jnp.tanh, eps=1e-6):
