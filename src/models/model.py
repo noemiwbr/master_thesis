@@ -86,6 +86,39 @@ def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     with numpyro.plate("data", N):
         numpyro.sample("Y", dist.Gamma(concentration=alpha, rate=rate), obs=Y)
 
+def model_cf_beta(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
+    N, S, F = X.shape
+
+    w1 = numpyro.sample("w1", dist.Normal(0.,1).expand([F,16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.,1).expand([16]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0.,1).expand([16,8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.,1).expand([8]).to_event(1))
+    
+    # mean head (logit of m)
+    w3m = numpyro.sample("w3m", dist.Normal(0.,1).expand([8,1]).to_event(2))
+    b3m = numpyro.sample("b3m", dist.Normal(0.,1).expand([1]).to_event(1))
+    # precision head (log κ)
+    w3k = numpyro.sample("w3k", dist.Normal(0.,1).expand([8,1]).to_event(2))
+    b3k = numpyro.sample("b3k", dist.Normal(0.,1).expand([1]).to_event(1))
+
+    # forward
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+    m_logit = (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
+    k_raw   = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1).sum(axis=1)
+
+    m = jax.nn.sigmoid(m_logit) # in (0,1)
+    k = jax.nn.softplus(k_raw) + 1e-3 # > 0
+    alpha = m * k + 1e-3
+    beta  = (1 - m) * k + 1e-3
+
+    # keep Y safely in (0,1)
+    Y_safe = None if Y is None else (Y*(1-2*eps) + eps)
+
+    with numpyro.plate("data", N):
+        numpyro.sample("y", dist.Beta(alpha, beta), obs=Y_safe)
+
+
 
 def model_cf_logitnormal(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     N, S, F = X.shape
@@ -105,9 +138,9 @@ def model_cf_logitnormal(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
-    mu = (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
+    mu = numpyro.deterministic("mu", (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1))
     s = (jnp.einsum("nsg,gd->nsd", z2, w3s) + b3s).squeeze(-1).sum(axis=1)
-    sigma = jax.nn.softplus(s) + 1e-3
+    sigma = numpyro.deterministic("sigma", (jax.nn.softplus(s) + 1e-3))
 
     if Y is not None:
         CF_safe = Y*(1-2*eps)+eps
