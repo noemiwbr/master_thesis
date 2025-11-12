@@ -107,10 +107,10 @@ def model_cf_beta(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     m_logit = (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
     k_raw   = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1).sum(axis=1)
 
-    m = jax.nn.sigmoid(m_logit) # in (0,1)
+    m = numpyro.deterministic("mu", jax.nn.sigmoid(m_logit)) # in (0,1), m = E[Y] = a/(a+b)
     k = jax.nn.softplus(k_raw) + 1e-3 # > 0
-    alpha = m * k + 1e-3
-    beta  = (1 - m) * k + 1e-3
+    alpha = numpyro.deterministic("alpha", m * k + 1e-3)
+    beta  = numpyro.deterministic("beta", (1 - m) * k + 1e-3)
 
     # keep Y safely in (0,1)
     Y_safe = None if Y is None else (Y*(1-2*eps) + eps)
@@ -401,44 +401,63 @@ def quantile_gen_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jax.nn.r
             )
             
 
-def quantile_cf_model(X, Y=None, quantiles=(0.025, 0.5, 0.975), nonlin=jnp.tanh, eps=1e-6):
+def quantile_cf_model(X, Y=None, quantiles=(0.025, 0.5, 0.975),
+                      nonlin=jax.nn.relu, eps=1e-6):
     """
-    Bayesian quantile model for capacity factor (bounded in (0,1)),
-    using a logit transform and AsymmetricLaplaceQuantile likelihood.
+    Quantile regression model for capacity factor in (0,1)
+    using an Asymmetric Laplace Quantile likelihood.
     """
+
     N, S, F = X.shape
     Q = len(quantiles)
 
-    w1 = numpyro.sample("w1", dist.Normal(0., 1.).expand([F, 16]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0., 1.).expand([16]).to_event(1))
+    # shared hidden layers
+    w1 = numpyro.sample("w1", dist.Normal(0, 0.5).expand([F, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0, 0.5).expand([16]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0, 0.5).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0, 0.5).expand([8]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0, 0.5).expand([8, Q]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0, 0.5).expand([Q]).to_event(1))
 
-    w2 = numpyro.sample("w2", dist.Normal(0., 1.).expand([16, 8]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0., 1.).expand([8]).to_event(1))
-
-    w3 = numpyro.sample("w3", dist.Normal(0., 1.).expand([8, Q]).to_event(2))
-    b3 = numpyro.sample("b3", dist.Normal(0., 1.).expand([Q]).to_event(1))
-
-    # Forward pass
+    # forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
-    y_pred_q = (jnp.einsum("nsg,gq->nsq", z2, w3) + b3).sum(axis=1)  # [N, Q]
+    y_pred_raw = (jnp.einsum("nsg,gq->nsq", z2, w3) + b3).mean(axis=1)  # [N,Q]
 
-    # Logit transform of observed CF
-    if Y is not None:
-        CF_safe = Y * (1 - 2 * eps) + eps   # ensure in (0,1)
-        y_star = jnp.log(CF_safe) - jnp.log1p(-CF_safe)  # logit(Y)
+    # Monotone increasing quantiles, restricted to (0,1)
+    if Q > 1:
+        q0_raw = y_pred_raw[:, 0:1]
+        q0 = jax.nn.sigmoid(q0_raw) * (1 - 2*eps) + eps
+        deltas_raw = y_pred_raw[:, 1:]
+        deltas = jax.nn.softplus(deltas_raw)  # positive increments
+        deltas = deltas / (1.0 + deltas)  # compress to (0,1) increments
+        y_pred_q = jnp.concatenate([q0,
+                                    q0 + jnp.cumsum(deltas * (1 - q0), axis=1)],
+                                   axis=1)
+        # clamp to (0,1)
+        y_pred_q = jnp.clip(y_pred_q, eps, 1 - eps)
     else:
-        y_star = None
+        y_pred_q = jax.nn.sigmoid(y_pred_raw) * (1 - 2*eps) + eps
 
-    # Likelihood: logit(Y) ~ AsymmetricLaplaceQuantile(loc = y_pred_q, scale = 1.0, quantile = q)
+    # per-quantile scale
+    sigma_q = numpyro.sample("sigma_q", dist.Exponential(1.0).expand([Q]).to_event(1))
+
+    # Save deterministic quantiles
+    for i, q in enumerate(quantiles):
+        numpyro.deterministic(f"cf_quantile_{int(q*100)}", y_pred_q[:, i])
+
+    # Observed data safe in (0,1)
+    Y_safe = None if Y is None else (Y * (1 - 2*eps) + eps)
+
+    # Likelihood: composite quantile likelihood
     with numpyro.plate("data", N):
         for i, q in enumerate(quantiles):
             numpyro.sample(
-                f"y_star_q{int(q*100)}",
+                f"Y_obs_q{int(q*100)}",
                 dist.AsymmetricLaplaceQuantile(
                     loc=y_pred_q[:, i],
-                    scale=1.0,
+                    scale=sigma_q[i],
                     quantile=q,
                 ),
-                obs=y_star
+                obs=Y_safe,
             )
