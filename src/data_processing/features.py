@@ -2,6 +2,7 @@ import pandas as pd
 import jax.numpy as jnp
 from sklearn.preprocessing import StandardScaler
 
+
 # Use sin (North-South) and cos (East-West) instead of degree
 def winddir_transform(df, columns=None, prefix=None, n_members=None):
     # Determine which columns to process (works for forecast and nowcast)
@@ -11,17 +12,19 @@ def winddir_transform(df, columns=None, prefix=None, n_members=None):
         cols = [f"{prefix}{i:02d}" for i in range(n_members)]
     else:
         raise ValueError("Either columns or (prefix + n_members) must be provided")
-    
+
     angles_deg = df[cols].to_numpy()
     angles_rad = jnp.deg2rad(angles_deg)
-    
+
     x = jnp.cos(angles_rad)
     y = jnp.sin(angles_rad)
-    
+
     x_cols = [f"{col}_x" for col in cols]
     y_cols = [f"{col}_y" for col in cols]
-    
-    return pd.DataFrame(jnp.concatenate([x, y], axis=1), columns=x_cols + y_cols, index=df.index)
+
+    return pd.DataFrame(
+        jnp.concatenate([x, y], axis=1), columns=x_cols + y_cols, index=df.index
+    )
 
 
 # Scaling of input features
@@ -30,9 +33,11 @@ def scale_features(train_df, test_df, scale_cols):
     train_scaled = scaler.fit_transform(train_df[scale_cols])
     # Transform test data using same scaler
     test_scaled = scaler.transform(test_df[scale_cols])
-    train_scaled_df = pd.DataFrame(train_scaled, columns=scale_cols, index=train_df.index)
+    train_scaled_df = pd.DataFrame(
+        train_scaled, columns=scale_cols, index=train_df.index
+    )
     test_scaled_df = pd.DataFrame(test_scaled, columns=scale_cols, index=test_df.index)
-    
+
     # Keep non-scaled columns (e.g. wind dir - already transformed)
     missing_columns = [col for col in train_df.columns if col not in scale_cols]
     train_scaled_df[missing_columns] = train_df[missing_columns]

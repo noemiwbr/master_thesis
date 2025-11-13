@@ -12,7 +12,9 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from tqdm.auto import tqdm
 
 
-def load_maintenance_events(maintenance_events_dir="../data/UMM_Messages.xlsx") -> pd.DataFrame:
+def load_maintenance_events(
+    maintenance_events_dir="../data/UMM_Messages.xlsx",
+) -> pd.DataFrame:
     """load maintenance events"""
 
     # read raw excel file
@@ -26,6 +28,7 @@ def load_maintenance_events(maintenance_events_dir="../data/UMM_Messages.xlsx") 
         f"Loading a static dataset. {maintenance_events_download_instructions}"
     )
     return maintenance_events
+
 
 def process_maintenance_events(maintenance_events: pd.DataFrame) -> pd.DataFrame:
     # drop columns containing information that is a duplicate, low cardinality or low impact

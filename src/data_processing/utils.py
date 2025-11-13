@@ -8,8 +8,14 @@ from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
 from numpyro.optim import Adam
 
 
-def save_checkpoint(samples, model_name="bnn", args=None, rng_key=None,
-                    dir_path="../checkpoints", target="gen"):
+def save_checkpoint(
+    samples,
+    model_name="bnn",
+    args=None,
+    rng_key=None,
+    dir_path="../checkpoints",
+    target="gen",
+):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -38,12 +44,14 @@ def load_checkpoint(model_name=None, file_name=None, dir_path="../checkpoints"):
         path_to_ckp = os.path.join(dir_path, f"{file_name}.pkl")
         print(f"Loading specified checkpoint: {path_to_ckp}")
 
-    else: 
+    else:
         pattern = os.path.join(dir_path, f"{model_name}_*.pkl")
         files = glob(pattern)
 
         if not files:
-            raise FileNotFoundError(f"No checkpoint files found for model '{model_name}' in '{dir_path}'")
+            raise FileNotFoundError(
+                f"No checkpoint files found for model '{model_name}' in '{dir_path}'"
+            )
 
         # Sort by modification time and pick the latest
         files.sort(key=os.path.getmtime)
@@ -64,9 +72,9 @@ def run_inference_bnn(model, args, rng_key, X, Y):
     kernel = NUTS(model)
     mcmc = MCMC(
         kernel,
-        num_warmup=args['num_warmup'],
-        num_samples=args['num_samples'],
-        num_chains=args['num_chains'],
+        num_warmup=args["num_warmup"],
+        num_samples=args["num_samples"],
+        num_chains=args["num_chains"],
         chain_method="parallel",
         progress_bar=True,
     )
@@ -76,7 +84,6 @@ def run_inference_bnn(model, args, rng_key, X, Y):
     return mcmc.get_samples()
 
 
-
 # Posterior predictive for basic BNN
 def predict_bnn(model, rng_key, samples, X):
     model = handlers.substitute(handlers.seed(model, rng_key), samples)
@@ -84,8 +91,9 @@ def predict_bnn(model, rng_key, samples, X):
     return trace["Y"]["value"]
 
 
-
-def run_svi(model, guide, rng_key, X_train, Y_train, optimizer=Adam, lr=1e-3, num_steps=5000):
+def run_svi(
+    model, guide, rng_key, X_train, Y_train, optimizer=Adam, lr=1e-3, num_steps=5000
+):
     optimizer = optimizer(lr)
     svi = SVI(model, guide, optimizer, loss=Trace_ELBO(num_particles=8))
 
