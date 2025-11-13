@@ -1,4 +1,5 @@
 ### **Project Description**
+
 **Bayesian Framework for Wind Power Forecasting with Uncertainty Estimation**
 
 **Purpose**
@@ -13,23 +14,26 @@ This thesis will integrate selected components and methodological ideas from the
 **Goal**
 
 The goal is to design and implement a **probabilistic wind-power forecasting model** that:
-* Predicts wind-power production exactly two days ahead at an hourly resolution for 24 hours,
-* Provides well-calibrated uncertainty estimates,
-* Is robust to changes such as wind-park capacity adjustments and the commissioning of new wind parks, and
-* Is feasible for deployment at Statnett.
+
+- Predicts wind-power production exactly two days ahead at an hourly resolution for 24 hours,
+- Provides well-calibrated uncertainty estimates,
+- Is robust to changes such as wind-park capacity adjustments and the commissioning of new wind parks, and
+- Is feasible for deployment at Statnett.
 
 **Work Plan**
 
 Step 1: Preparation and Exploration
-* **1a Familiarization:** Review the WindAI competition models and datasets to understand their structure, features, and performance characteristics. Conduct a brief literature review on wind-power forecasting methods.
-* **1b Bayesian framework setup:** Develop a simple baseline model within a Bayesian framework and study relevant literature on probabilistic forecasting and uncertainty estimation.
-* **1c Evaluation metrics:** Identify suitable metrics to assess model performance, including measures of accuracy, uncertainty calibration, and robustness to changes in input data.
+
+- **1a Familiarization:** Review the WindAI competition models and datasets to understand their structure, features, and performance characteristics. Conduct a brief literature review on wind-power forecasting methods.
+- **1b Bayesian framework setup:** Develop a simple baseline model within a Bayesian framework and study relevant literature on probabilistic forecasting and uncertainty estimation.
+- **1c Evaluation metrics:** Identify suitable metrics to assess model performance, including measures of accuracy, uncertainty calibration, and robustness to changes in input data.
 
 Step 2: **Model Design**
-* Select and integrate relevant components or ideas from the *WindAI* competition models (e.g., use of unavailability messages, capacity factor modeling, and feature representations). Design an overall model architecture within the Bayesian framework.
+
+- Select and integrate relevant components or ideas from the _WindAI_ competition models (e.g., use of unavailability messages, capacity factor modeling, and feature representations). Design an overall model architecture within the Bayesian framework.
 
 Step 3: **Training and Evaluation**
-* Train and compare the developed models, combining insights from Step 1 and Step 2. Evaluate performance in terms of both predictive accuracy and uncertainty estimation quality.
 
-*Note: Steps 2 and 3 will follow an iterative process*
+- Train and compare the developed models, combining insights from Step 1 and Step 2. Evaluate performance in terms of both predictive accuracy and uncertainty estimation quality.
 
+_Note: Steps 2 and 3 will follow an iterative process_
