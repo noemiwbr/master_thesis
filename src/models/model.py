@@ -64,6 +64,60 @@ class WindPowerModel(nn.Module):
         return y_site, y_sum
 
 
+class WindPowerQuantile(nn.Module):
+    def __init__(self, num_features, quantiles=(0.025, 0.5, 0.975)):
+        super().__init__()
+        self.quantiles = quantiles
+        Q = len(quantiles)
+        assert 0.5 in quantiles, "Median must be included in the quantiles"
+
+        # Indices
+        self.mid_idx = (self.quantiles == 0.5).nonzero()[0].item()
+        self.left_count = self.mid_idx
+        self.right_count = Q - self.mid_idx - 1
+
+        self.shared_mlp = nn.Sequential(
+            nn.Linear(num_features, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+        )
+
+        # Quantile heads
+        self.median_head = nn.Linear(8, 1)
+        self.left_head = nn.Linear(8, self.left_count)  # for tau < 0.5
+        self.right_head = nn.Linear(8, self.right_count)  # for tau > 0.5
+
+        self.softplus = nn.Softplus()
+
+    def forward(self, x):
+        """
+        x: [timesteps, num_sites, num_features]
+        """
+        y_site_q = self.shared_mlp(x)  # [T, S, Q]
+        y_sum_q = y_site_q.sum(dim=1)  # [T, Q]
+
+        # Median
+        m = self.median_head(y_sum_q)
+
+        # Positive distances
+        d_left = self.softplus(self.left_head(y_sum_q))  # [T, left_count]
+        d_right = self.softplus(self.right_head(y_sum_q))  # [T, right_count]
+
+        # quantiles left of median (descending)
+        q_left = m - torch.flip(torch.cumsum(d_left, dim=-1), dims=[-1])
+
+        # quantiles right of median (ascending)
+        q_right = m + torch.cumsum(d_right, dim=-1)
+
+        # concat: [T, K]
+        y_q = torch.cat([q_left, m, q_right], dim=-1)
+
+        return y_q
+
+
 def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     N, S, F = X.shape
 
