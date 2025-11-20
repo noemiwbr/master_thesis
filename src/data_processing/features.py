@@ -45,6 +45,30 @@ def scale_features(train_df, test_df, scale_cols):
     return train_scaled_df, test_scaled_df
 
 
+# Fit scaler on training data and return parameters for later use.
+def get_scaler_params(train_df, scale_cols):
+    scaler = StandardScaler()
+    scaler.fit(train_df[scale_cols])
+    return {
+        "mean": dict(zip(scale_cols, scaler.mean_)),
+        "scale": dict(zip(scale_cols, scaler.scale_)),
+        "columns": scale_cols,
+    }
+
+
+# Apply pre-computed scaler parameters to new data.
+def apply_scaler_params(df, scaler_params):
+    scale_cols = scaler_params["columns"]
+    mean = scaler_params["mean"]
+    scale = scaler_params["scale"]
+
+    scaled_df = df.copy()
+    for col in scale_cols:
+        scaled_df[col] = (df[col] - mean[col]) / scale[col]
+
+    return scaled_df
+
+
 # MultiIndex (timestamp, wind park) and feature columns -> np array with shape (timestamps, wind parks, features)
 def get_input_shaped(X_df, feature_cols):
     # TODO aren't feature cols just the columns of the X_df??
