@@ -6,6 +6,9 @@ import time
 from numpyro import handlers
 from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
 from numpyro.optim import Adam
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde
 
 
 def save_checkpoint(
@@ -164,3 +167,139 @@ def run_svi(
     losses = svi_result.losses
     print(f"Final ELBO loss: {losses[-1]:.3f}")
     return svi_result
+
+
+class QuantileDistribution:
+    """
+    A utility class that converts model-predicted quantiles q(tau)
+    into a full predictive distribution with:
+        - inverse CDF
+        - CDF
+        - PDF (via dq/dtau)
+        - sampling
+        - highest-density intervals (HDIs)
+        - KDE-based PDF for smoothing
+        - plotting utilities
+    """
+
+    def __init__(self, quantile_levels, quantile_values, eps=1e-6):
+        self.taus = np.asarray(quantile_levels)
+        self.qvals = np.asarray(quantile_values)
+        self.eps = eps
+
+        # Sort to ensure correct order
+        idx = np.argsort(self.taus)
+        self.taus = self.taus[idx]
+        self.qvals = self.qvals[idx]
+
+        assert len(self.taus) == len(self.qvals), "taus and qvals must have same length"
+
+        # Enforce monotonicity (usually already guaranteed by model)
+        self.qvals = np.maximum.accumulate(self.qvals)
+
+    def icdf(self, tau):
+        """Return q(tau) by interpolation."""
+        return np.interp(tau, self.taus, self.qvals)
+
+    def cdf(self, y):
+        """Return F(y) via interpolation τ = F(y)."""
+        return np.interp(y, self.qvals, self.taus, left=0.0, right=1.0)
+
+    def pdf(self):
+        """
+        PDF via dq/dtau, non-smooth or unstable for flat CDF
+        Returns:
+            x: q-values (same as quantile_values)
+            pdf_vals: approximate PDF evaluated at q-values
+        """
+        q = self.qvals
+        t = self.taus
+        K = len(q)
+
+        # Derivative dq/dτ
+        slope = (q[1:] - q[:-1]) / (t[1:] - t[:-1])  # Length K-1
+
+        # Pad to length K
+        slope = np.concatenate([[slope[0]], slope, [slope[-1]]])
+        slope = slope[:K]
+
+        pdf_vals = 1.0 / (slope + self.eps)
+        return q, pdf_vals
+
+    def sample(self, n_samples=2000):
+        """Inverse-transform sampling: Y = q(U), U ~ Uniform(0,1)"""
+        u = np.random.rand(n_samples)
+        return np.interp(u, self.taus, self.qvals)
+
+    def hdi(self, cred_mass=0.95, n_samples=20000):
+        """
+        Compute HDI (shortest interval containing 'cred_mass' of the probability)
+        Implemented via sampling
+        Returns:
+            (hdi_min, hdi_max)
+        """
+        samples = self.sample(n_samples)
+        samples = np.sort(samples)
+
+        m = int(np.floor(cred_mass * n_samples))
+
+        if m < 1:
+            raise ValueError("cred_mass too small or not enough samples")
+
+        # Candidate intervals, each candidate contains m samples (i.e. 95% mass)
+        widths = samples[m:] - samples[: n_samples - m]
+
+        # Find shortest interval -> HDI
+        idx_min = np.argmin(widths)
+
+        return samples[idx_min], samples[idx_min + m]
+
+    def kde_pdf(self, n_samples=5000, grid_size=300):
+        """
+        Smooth PDF using KDE
+        Returns:
+            x_grid, kde_pdf_values
+        """
+        samples = self.sample(n_samples)
+        kde = gaussian_kde(samples)
+
+        x_min, x_max = samples.min(), samples.max()
+        x_grid = np.linspace(x_min, x_max, grid_size)
+        pdf_vals = kde(x_grid)
+        return x_grid, pdf_vals
+
+    def plot_cdf(self, ax=None, **kwargs):
+        x, y = self.qvals, self.taus
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(x, y, **kwargs)
+        ax.set_xlabel("Value")
+        ax.set_ylabel("CDF")
+        ax.grid(alpha=0.3)
+        ax.set_title("Estimated CDF")
+        return ax
+
+    def plot_pdf(self, ax=None, **kwargs):
+        x, pdf_vals = self.pdf()
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(x, pdf_vals, **kwargs)
+        ax.set_xlabel("Value")
+        ax.set_ylabel("Density")
+        ax.grid(alpha=0.3)
+        ax.set_title("Approximate PDF (dq/dτ)")
+        return ax
+
+    def plot_kde_pdf(self, n_samples=5000, grid_size=300, bins=40):
+        samples = self.sample(n_samples)
+        x_grid, pdf_vals = self.kde_pdf(n_samples, grid_size)
+
+        plt.figure(figsize=(6, 4))
+        plt.hist(samples, bins=bins, density=True, alpha=0.4, label="Samples")
+        plt.plot(x_grid, pdf_vals, lw=2, label="KDE PDF")
+        plt.xlabel("Value")
+        plt.ylabel("Density")
+        plt.grid(alpha=0.3)
+        plt.legend()
+        plt.title("Smooth PDF via KDE")
+        plt.show()
