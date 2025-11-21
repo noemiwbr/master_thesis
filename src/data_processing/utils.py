@@ -13,13 +13,15 @@ def save_checkpoint(
     model_name="bnn",
     args=None,
     rng_key=None,
+    rng_key_predict=None,
     dir_path="../checkpoints",
     target="gen",
+    bid_zone="ELSPOT_NO1",
 ):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{model_name}_{timestamp}_{target}.pkl"
+    filename = f"{model_name}_{timestamp}_{target}_{bid_zone}.pkl"
     path = os.path.join(dir_path, filename)
 
     # Bundle all relevant information into one dictionary
@@ -27,8 +29,10 @@ def save_checkpoint(
         "model_name": model_name,
         "timestamp": timestamp,
         "samples": samples,
-        "args": args if args is not None else None,
+        "args": args,
         "rng_key": rng_key,
+        "rng_key_predict": rng_key_predict,
+        "bid_zone": bid_zone,
     }
 
     with open(path, "wb") as f:
