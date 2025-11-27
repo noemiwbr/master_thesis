@@ -599,7 +599,7 @@ def check_evaluation_data_quality(weather_df, windpower_series, bid_zone):
 
 
 def load_evaluation_data(
-    date,
+    dates,
     scaler_params,
     site_scaler_params,
     bid_zone="ELSPOT NO1",
@@ -608,12 +608,12 @@ def load_evaluation_data(
     data_path="../data",
 ):
     """
-    Load and preprocess evaluation data for a specific date.
+    Load and preprocess evaluation data for a specific dates.
 
     Same preprocessing pipeline as training data,
     but uses saved scaler parameters instead of fitting new ones. The function
     follows these steps:
-    1. Parse date
+    1. Parse dates
     2. Construct file paths and load raw data
     3. Transform features (wind direction)
     4. Filter and align data for bid zone
@@ -621,103 +621,111 @@ def load_evaluation_data(
     6. Apply training scaler parameters
     7. Convert to arrays
     """
-    # 1. Parse date and get file paths
-    date_parsed, date_str = parse_evaluation_date(date)
+    print(f"Loading evaluation data for {len(dates)} dates in zone {bid_zone}...")
 
-    # 2. Construct file paths and load raw data
-    windpower_paths = get_evaluation_file_paths(date_str, data_path, dataset)
+    weather_data_period = []
+    wind_data_period = []
 
-    if dataset == "nowcast":
-        path_to_weather1, path_to_weather2, path_to_windpower1, path_to_windpower2 = (
-            windpower_paths
+    # Load data for each date
+    for date in dates:
+
+        # 1. Parse date and get file paths
+        date_parsed, date_str = parse_evaluation_date(date)
+        print(
+            f"Loading evaluation data for {date_parsed.strftime('%Y-%m-%d')} in zone {bid_zone}"
         )
 
-        # Load and combine two nowcast files (shifted by 11 hours)
-        weather1 = load_weather_nowcast(path_to_weather1)
-        weather2 = load_weather_nowcast(path_to_weather2)
-        # Concatenate and sort by timestamp
-        weather_data = pd.concat([weather1, weather2]).sort_index()
+        # 2. Construct file paths and load raw data
+        windpower_paths = get_evaluation_file_paths(date_str, data_path, dataset)
 
-        # Load and combine two windpower files (shifted by 11 hours)
-        windpower1 = load_windpower(path_to_windpower1)
-        windpower2 = load_windpower(path_to_windpower2)
-        # Concatenate and sort by timestamp
-        windpower = pd.concat([windpower1, windpower2]).sort_index()
+        if dataset == "nowcast":
+            (
+                path_to_weather1,
+                path_to_weather2,
+                path_to_windpower1,
+                path_to_windpower2,
+            ) = windpower_paths
 
-        # Filter to target day (00:00-23:00)
-        target_date = pd.to_datetime(date_str, format="%Y%m%d")
-        target_start = target_date.replace(hour=0, minute=0, second=0)
-        target_end = target_date.replace(hour=23, minute=0, second=0)
+            # Load and combine two nowcast files (shifted by 11 hours)
+            weather1 = load_weather_nowcast(path_to_weather1)
+            weather2 = load_weather_nowcast(path_to_weather2)
+            # Concatenate and sort by timestamp
+            weather_data = pd.concat([weather1, weather2]).sort_index()
 
-        # Localize to CET to match data timezone
-        target_start = target_start.tz_localize("CET")
-        target_end = target_end.tz_localize("CET")
+            # Load and combine two windpower files (shifted by 11 hours)
+            windpower1 = load_windpower(path_to_windpower1)
+            windpower2 = load_windpower(path_to_windpower2)
+            # Concatenate and sort by timestamp
+            windpower = pd.concat([windpower1, windpower2]).sort_index()
 
-        # Filter weather to target day
-        weather_data = weather_data[
-            (weather_data.index >= target_start) & (weather_data.index <= target_end)
-        ]
+            # Filter to target day (00:00-23:00)
+            target_date = pd.to_datetime(date_str, format="%Y%m%d")
+            target_start = target_date.replace(hour=0, minute=0, second=0)
+            target_end = target_date.replace(hour=23, minute=0, second=0)
 
-        # Filter windpower to target day
-        windpower = windpower[
-            (windpower.index >= target_start) & (windpower.index <= target_end)
-        ]
+            # Localize to CET to match data timezone
+            target_start = target_start.tz_localize("CET")
+            target_end = target_end.tz_localize("CET")
+
+            # Filter weather to target day
+            weather_data = weather_data[
+                (weather_data.index >= target_start)
+                & (weather_data.index <= target_end)
+            ]
+
+            # Filter windpower to target day
+            windpower = windpower[
+                (windpower.index >= target_start) & (windpower.index <= target_end)
+            ]
+
+        elif dataset == "forecast":  # forecast
+            path_to_weather, path_to_windpower1, path_to_windpower2 = windpower_paths
+
+            # Load forecast, rename columns, and select ensemble member
+            weather_forecast = load_weather_forecast(path_to_weather)
+            weather_forecast_renamed = rename_met_forecast_columns(weather_forecast)
+
+            weather_data = select_ensemble_member(
+                weather_forecast_renamed, member=ensemble_member
+            )
+            # Set time as index to match nowcast format
+            weather_data = weather_data.set_index("time")
+
+            # Load and combine two windpower files (shifted by 11 hours)
+            windpower1 = load_windpower(path_to_windpower1)
+            windpower2 = load_windpower(path_to_windpower2)
+            # Concatenate and sort by timestamp
+            windpower = pd.concat([windpower1, windpower2]).sort_index()
+
+            # Filter to target prediction day (date + 2 days, 00:00-23:00)
+            forecast_date = pd.to_datetime(date_str, format="%Y%m%d")
+            target_date = forecast_date + pd.Timedelta(days=2)
+            target_start = target_date.replace(hour=0, minute=0, second=0)
+            target_end = target_date.replace(hour=23, minute=0, second=0)
+
+            # Localize to CET to match data timezone
+            target_start = target_start.tz_localize("CET")
+            target_end = target_end.tz_localize("CET")
+
+            # Filter weather forecast to target day
+            weather_data = weather_data[
+                (weather_data.index >= target_start)
+                & (weather_data.index <= target_end)
+            ]
+
+            # Filter windpower to target day
+            windpower = windpower[
+                (windpower.index >= target_start) & (windpower.index <= target_end)
+            ]
+        else:
+            raise ValueError(f"Unknown dataset: {dataset}")
 
         print(f"Filtered to target day: {target_date.strftime('%Y-%m-%d')}")
-        print(f"  Weather data: {len(weather_data)} timestamps")
-        print(f"  Windpower data: {len(windpower)} timestamps")
+        weather_data_period.append(weather_data)
+        wind_data_period.append(windpower)
 
-    elif dataset == "forecast":  # forecast
-        path_to_weather, path_to_windpower1, path_to_windpower2 = windpower_paths
-
-        # Load forecast, rename columns, and select ensemble member
-        weather_forecast = load_weather_forecast(path_to_weather)
-        print(weather_forecast.columns)
-        weather_forecast_renamed = rename_met_forecast_columns(weather_forecast)
-        print(weather_forecast_renamed.columns)
-        weather_data = select_ensemble_member(
-            weather_forecast_renamed, member=ensemble_member
-        )
-        # Set time as index to match nowcast format
-        weather_data = weather_data.set_index("time")
-        print(weather_data.columns)
-
-        # Load and combine two windpower files (shifted by 11 hours)
-        windpower1 = load_windpower(path_to_windpower1)
-        windpower2 = load_windpower(path_to_windpower2)
-        # Concatenate and sort by timestamp
-        windpower = pd.concat([windpower1, windpower2]).sort_index()
-
-        # Filter to target prediction day (date + 2 days, 00:00-23:00)
-        forecast_date = pd.to_datetime(date_str, format="%Y%m%d")
-        target_date = forecast_date + pd.Timedelta(days=2)
-        target_start = target_date.replace(hour=0, minute=0, second=0)
-        target_end = target_date.replace(hour=23, minute=0, second=0)
-
-        # Localize to CET to match data timezone
-        target_start = target_start.tz_localize("CET")
-        target_end = target_end.tz_localize("CET")
-
-        # Filter weather forecast to target day
-        weather_data = weather_data[
-            (weather_data.index >= target_start) & (weather_data.index <= target_end)
-        ]
-
-        # Filter windpower to target day
-        windpower = windpower[
-            (windpower.index >= target_start) & (windpower.index <= target_end)
-        ]
-
-        print(f"Filtered to target prediction day: {target_date.strftime('%Y-%m-%d')}")
-        print(f"  Weather data: {len(weather_data)} timestamps")
-        print(f"  Windpower data: {len(windpower)} timestamps")
-
-    else:
-        raise ValueError(f"Unknown dataset: {dataset}")
-
-    print(
-        f"Loading evaluation data for {date_parsed.strftime('%Y-%m-%d')} in zone {bid_zone}"
-    )
+        weather_data = pd.concat(weather_data_period, axis=0)
+        windpower = pd.concat(wind_data_period, axis=0)
 
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
 
