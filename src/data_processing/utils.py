@@ -9,6 +9,8 @@ from numpyro.optim import Adam
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
+import torch
+from models.model import WindPowerQuantile, WindPowerModel_simple
 
 
 def save_checkpoint(
@@ -130,7 +132,101 @@ def load_checkpoint(model_name=None, file_name=None, dir_path="../checkpoints"):
     return state
 
 
-# TODO more generic, should be possible to have quanitles as argument
+def save_torch_checkpoint(
+    model,
+    optimizer=None,
+    model_name="WindPowerModel_simple",
+    bid_zone="ELSPOT_NO1",
+    quantiles=None,
+    num_features=None,
+    dir_path="../checkpoints",
+):
+
+    os.makedirs(dir_path, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    bid_zone_clean = bid_zone.replace(" ", "_")
+    filename = f"{model_name}_{timestamp}_{bid_zone_clean}.pt"
+    path = os.path.join(dir_path, filename)
+
+    # Save model weights, optimizer state, and model configuration
+    checkpoint = {
+        "model_name": model_name,
+        "bid_zone": bid_zone,
+        "model_state_dict": model.state_dict(),
+        "model_class": model.__class__.__name__,
+    }
+
+    # Save model configuration for reconstruction
+    if quantiles is not None:
+        checkpoint["quantiles"] = quantiles
+    if num_features is not None:
+        checkpoint["num_features"] = num_features
+
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+
+    torch.save(checkpoint, path)
+
+    print(f"Saved checkpoint: {filename}")
+
+    return path
+
+
+def load_torch_model(
+    file_name=None,
+    model_name=None,
+    dir_path="../checkpoints",
+):
+
+    if file_name is not None:
+        path = os.path.join(dir_path, f"{file_name}.pt")
+    else:
+        pattern = os.path.join(dir_path, f"{model_name}_*.pt")
+        files = glob(pattern)
+
+        if not files:
+            raise FileNotFoundError(
+                f"No checkpoint files found for model '{model_name}' in '{dir_path}'"
+            )
+
+        files.sort(key=os.path.getmtime)
+        path = files[-1]
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint file not found: {path}")
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+
+    model_class_name = checkpoint.get("model_class", "WindPowerQuantile")
+
+    if model_class_name == "WindPowerQuantile":
+        if "quantiles" not in checkpoint or "num_features" not in checkpoint:
+            raise ValueError(
+                "Checkpoint does not contain model configuration (quantiles, num_features). "
+                "Please save checkpoint with these parameters."
+            )
+
+        quantiles = checkpoint["quantiles"]
+        num_features = checkpoint["num_features"]
+        model = WindPowerQuantile(num_features, quantiles)
+    elif model_class_name == "WindPowerModel_simple":
+        num_features = checkpoint["num_features"]
+        model = WindPowerModel_simple(num_features)
+    else:
+        raise ValueError(f"Unknown model class: {model_class_name}")
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    print(f"Loaded model: {os.path.basename(path)}")
+    if "bid_zone" in checkpoint:
+        print(f"  Bid zone: {checkpoint['bid_zone']}")
+    print(f"  Model class: {model_class_name}")
+
+    return model, checkpoint
+
+
 # Inference helper for basic BNN
 def run_inference_bnn(model, args, rng_key, X, Y):
     start = time.time()
