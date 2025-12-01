@@ -101,19 +101,19 @@ class WindPowerQuantile(nn.Module):
 
         # Median
         m = self.median_head(y_sum_q)
-
+        # m = torch.clamp(m, min=0.0) # TODO clamp to prevent non-negatives, is this what we want?
         # Positive distances
         d_left = self.softplus(self.left_head(y_sum_q))  # [T, left_count]
         d_right = self.softplus(self.right_head(y_sum_q))  # [T, right_count]
 
         # quantiles left of median (descending)
         q_left = m - torch.flip(torch.cumsum(d_left, dim=-1), dims=[-1])
-
+        # q_left = torch.clamp(q_left, min=0.0) # TODO clamp to prevent non-negatives, is this what we want?
         # quantiles right of median (ascending)
         q_right = m + torch.cumsum(d_right, dim=-1)
 
         # concat: [T, K]
-        y_q = torch.cat([q_left, m, q_right], dim=-1)
+        y_q = self.softplus(torch.cat([q_left, m, q_right], dim=-1))
 
         return y_q
 
