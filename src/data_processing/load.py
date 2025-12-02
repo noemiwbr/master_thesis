@@ -333,8 +333,8 @@ def load_and_preprocess_data(
 
 
 def load_and_preprocess_forecast_data(
-    scaler_params,
-    site_scaler_params,
+    scaler_params=None,
+    site_scaler_params=None,
     bid_zone="ELSPOT NO1",
     split_time=pd.Timestamp("2025-01-01 00:00:00", tz="CET"),
     ensemble_member=0,
@@ -350,7 +350,7 @@ def load_and_preprocess_forecast_data(
     4. Filter and align data for bid zone
     5. Filter operational period
     6. Split train/test
-    7. Apply existing scaler parameters (from nowcast)
+    7. Scaling (apply existing scaler parameters or calculate new ones)
     8. Convert to arrays
     """
     print(f"Loading forecast data for {bid_zone}, ensemble member {ensemble_member}...")
@@ -417,12 +417,33 @@ def load_and_preprocess_forecast_data(
         )
     )
 
-    # 7. Apply existing scaler parameters (from nowcast training)
-    df_train_X_scaled = apply_scaler_params(df_train_X, scaler_params)
-    df_test_X_scaled = apply_scaler_params(df_test_X, scaler_params)
+    # 7. Scaling TODO: Do I need scalar values later?
+    # Apply existing scaler parameters (from nowcast training)
+    if scaler_params is None:
+        print("No feature scaler parameter provided, computing new ones.")
+        df_train_X_scaled, df_test_X_scaled = scale_features(
+            df_train_X, df_test_X, scale_cols
+        )
 
-    # Apply site metadata scaling using nowcast parameters
-    sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
+        # Compute new site metadata scaler
+        sites_meta, site_scaler_params = scale_site_metadata(
+            sites_meta_unscaled, scaler_params=None
+        )
+
+        # Save scaler params
+        scaler_params = {
+            "mean": df_train_X[scale_cols].mean(),
+            "std": df_train_X[scale_cols].std(),
+        }
+
+    # Use provided scalar parameters
+    else:
+        print("Using provided scaler parameters.")
+        df_train_X_scaled = apply_scaler_params(df_train_X, scaler_params)
+        df_test_X_scaled = apply_scaler_params(df_test_X, scaler_params)
+
+        # Use provided scaler for site metadata
+        sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
 
     # 8. Convert to numpy/JAX arrays
     arrays = convert_to_arrays(
@@ -451,6 +472,8 @@ def load_and_preprocess_forecast_data(
         **arrays,
         "sites_meta": sites_meta,
         "feature_cols": feature_cols,
+        "scaler_params": scaler_params,
+        "site_scaler_params": site_scaler_params,
     }
 
 
