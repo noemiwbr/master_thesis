@@ -189,7 +189,7 @@ def model_cf_beta(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     Y_safe = None if Y is None else (Y * (1 - 2 * eps) + eps)
 
     with numpyro.plate("data", N):
-        numpyro.sample("y", dist.Beta(alpha, beta), obs=Y_safe)
+        numpyro.sample("Y", dist.Beta(alpha, beta), obs=Y_safe)
 
 
 def model_cf_logitnormal(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
@@ -223,7 +223,7 @@ def model_cf_logitnormal(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     # Likelihood: logit(Y) ~ Normal(mu, sigma)
     with numpyro.plate("data", N):
         numpyro.sample(
-            "y_star", dist.Normal(mu, sigma), obs=(y_star if Y is not None else None)
+            "Y", dist.Normal(mu, sigma), obs=(y_star if Y is not None else None)
         )
 
 
