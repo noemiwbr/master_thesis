@@ -65,11 +65,15 @@ class WindPowerModel(nn.Module):
 
 
 class WindPowerQuantile(nn.Module):
-    def __init__(self, num_features, quantiles=(0.025, 0.5, 0.975)):
+    def __init__(self, num_features, quantiles=(0.025, 0.5, 0.975), target="gen"):
         super().__init__()
         self.quantiles = quantiles
         Q = len(quantiles)
         assert 0.5 in quantiles, "Median must be included in the quantiles"
+
+        assert target == "gen" or target == "cf", "Taget must be either gen or cf"
+        function_mapping = {"gen": nn.Softplus(), "cf": torch.sigmoid}
+        self.monotonic_function = function_mapping[target]
 
         # Indices
         self.mid_idx = (self.quantiles == 0.5).nonzero()[0].item()
@@ -90,8 +94,6 @@ class WindPowerQuantile(nn.Module):
         self.left_head = nn.Linear(8, self.left_count)  # for tau < 0.5
         self.right_head = nn.Linear(8, self.right_count)  # for tau > 0.5
 
-        self.softplus = nn.Softplus()
-
     def forward(self, x):
         """
         x: [timesteps, num_sites, num_features]
@@ -103,8 +105,8 @@ class WindPowerQuantile(nn.Module):
         m = self.median_head(y_sum_q)
         # m = torch.clamp(m, min=0.0) # TODO clamp to prevent non-negatives, is this what we want?
         # Positive distances
-        d_left = self.softplus(self.left_head(y_sum_q))  # [T, left_count]
-        d_right = self.softplus(self.right_head(y_sum_q))  # [T, right_count]
+        d_left = self.monotonic_function(self.left_head(y_sum_q))  # [T, left_count]
+        d_right = self.monotonic_function(self.right_head(y_sum_q))  # [T, right_count]
 
         # quantiles left of median (descending)
         q_left = m - torch.flip(torch.cumsum(d_left, dim=-1), dims=[-1])
@@ -113,7 +115,7 @@ class WindPowerQuantile(nn.Module):
         q_right = m + torch.cumsum(d_right, dim=-1)
 
         # concat: [T, K]
-        y_q = self.softplus(torch.cat([q_left, m, q_right], dim=-1))
+        y_q = self.monotonic_function(torch.cat([q_left, m, q_right], dim=-1))
 
         return y_q
 

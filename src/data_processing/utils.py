@@ -20,13 +20,13 @@ def save_checkpoint(
     rng_key=None,
     rng_key_predict=None,
     dir_path="../checkpoints",
-    target="gen",
+    dataset="now",
     bid_zone="ELSPOT_NO1",
 ):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{model_name}_{timestamp}_{target}_{bid_zone}.pkl"
+    filename = f"{model_name}_{timestamp}_{dataset}_{bid_zone}.pkl"
     path = os.path.join(dir_path, filename)
 
     # Bundle all relevant information into one dictionary
@@ -38,6 +38,7 @@ def save_checkpoint(
         "rng_key": rng_key,
         "rng_key_predict": rng_key_predict,
         "bid_zone": bid_zone,
+        "dataset": dataset,
     }
 
     with open(path, "wb") as f:
@@ -139,6 +140,8 @@ def save_torch_checkpoint(
     bid_zone="ELSPOT_NO1",
     quantiles=None,
     num_features=None,
+    dataset="now",
+    target="gen",
     dir_path="../checkpoints",
 ):
 
@@ -146,7 +149,7 @@ def save_torch_checkpoint(
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     bid_zone_clean = bid_zone.replace(" ", "_")
-    filename = f"{model_name}_{timestamp}_{bid_zone_clean}.pt"
+    filename = f"{model_name}_{timestamp}_{dataset}_{target}_{bid_zone_clean}.pt"
     path = os.path.join(dir_path, filename)
 
     # Save model weights, optimizer state, and model configuration
@@ -155,6 +158,8 @@ def save_torch_checkpoint(
         "bid_zone": bid_zone,
         "model_state_dict": model.state_dict(),
         "model_class": model.__class__.__name__,
+        "dataset": dataset,
+        "target": target,
     }
 
     # Save model configuration for reconstruction
@@ -209,7 +214,8 @@ def load_torch_model(
 
         quantiles = checkpoint["quantiles"]
         num_features = checkpoint["num_features"]
-        model = WindPowerQuantile(num_features, quantiles)
+        target = checkpoint["target"]
+        model = WindPowerQuantile(num_features, quantiles, target)
     elif model_class_name == "WindPowerModel_simple":
         num_features = checkpoint["num_features"]
         model = WindPowerModel_simple(num_features)
