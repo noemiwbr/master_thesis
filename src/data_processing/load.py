@@ -474,6 +474,7 @@ def load_and_preprocess_forecast_data(
         "feature_cols": feature_cols,
         "scaler_params": scaler_params,
         "site_scaler_params": site_scaler_params,
+        "feature_cols": feature_cols,
     }
 
 
