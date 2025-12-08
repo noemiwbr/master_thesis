@@ -4,12 +4,16 @@ from sklearn.preprocessing import StandardScaler
 
 
 # Use sin (North-South) and cos (East-West) instead of degree
-def winddir_transform(df, columns=None, prefix=None, n_members=None):
+def sin_cos_transform(df, columns=None, prefix=None, n_members=None):
     # Determine which columns to process (works for forecast and nowcast)
     if columns is not None:
         cols = columns
+        new_cols_x = [f"{col}_x" for col in cols]
+        new_cols_y = [f"{col}_y" for col in cols]
     elif prefix is not None and n_members is not None:
-        cols = [f"{prefix}{i:02d}" for i in range(n_members)]
+        cols = [f"{prefix}_member_{i}" for i in range(n_members)]
+        new_cols_x = [f"{prefix}_x_member_{i}" for i in range(n_members)]
+        new_cols_y = [f"{prefix}_y_member_{i}" for i in range(n_members)]
     else:
         raise ValueError("Either columns or (prefix + n_members) must be provided")
 
@@ -19,12 +23,10 @@ def winddir_transform(df, columns=None, prefix=None, n_members=None):
     x = jnp.cos(angles_rad)
     y = jnp.sin(angles_rad)
 
-    x_cols = [f"{col}_x" for col in cols]
-    y_cols = [f"{col}_y" for col in cols]
-
-    return pd.DataFrame(
-        jnp.concatenate([x, y], axis=1), columns=x_cols + y_cols, index=df.index
+    sin_cos_transformed = pd.DataFrame(
+        jnp.concatenate([x, y], axis=1), columns=new_cols_x + new_cols_y, index=df.index
     )
+    return pd.concat([df, sin_cos_transformed], axis=1)
 
 
 # Scaling of input features
