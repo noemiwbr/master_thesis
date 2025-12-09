@@ -488,7 +488,8 @@ def load_and_preprocess_forecast_data(
         # Save scaler params
         scaler_params = {
             "mean": df_train_X[scale_cols].mean(),
-            "std": df_train_X[scale_cols].std(),
+            "scale": df_train_X[scale_cols].std(),
+            "columns": scale_cols,
         }
 
     # Use provided scalar parameters

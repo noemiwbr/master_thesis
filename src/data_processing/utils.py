@@ -54,6 +54,7 @@ def save_scaler_params(
     site_scaler_params,
     bid_zone="ELSPOT_NO1",
     split_time=None,
+    dataset="nowcast",
     dir_path="../checkpoints",
 ):
 
@@ -61,7 +62,7 @@ def save_scaler_params(
 
     # Clean bid zone name for filename
     bid_zone_clean = bid_zone.replace(" ", "_")
-    filename = f"scaler_params_{bid_zone_clean}.pkl"
+    filename = f"scaler_params_{bid_zone_clean}_{dataset}.pkl"
     path = os.path.join(dir_path, filename)
 
     state = {
@@ -80,22 +81,24 @@ def save_scaler_params(
 
 
 # Load scaler parameters for a specific bid zone
-def load_scaler_params(bid_zone="ELSPOT_NO1", dir_path="../checkpoints"):
+def load_scaler_params(
+    bid_zone="ELSPOT_NO1", dataset="nowcast", dir_path="../checkpoints"
+):
 
     bid_zone_clean = bid_zone.replace(" ", "_")
-    filename = f"scaler_params_{bid_zone_clean}.pkl"
+    filename = f"scaler_params_{bid_zone_clean}_{dataset}.pkl"
     path = os.path.join(dir_path, filename)
 
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"No scaler parameters found for {bid_zone} at {path}\n"
+            f"No scaler parameters found for {bid_zone} and {dataset} at {path}\n"
             f"Run load_and_preprocess_data() and save_scaler_params() first."
         )
 
     with open(path, "rb") as f:
         state = pickle.load(f)
 
-    print(f"Loaded scaler parameters for {state['bid_zone']}")
+    print(f"Loaded scaler parameters for {state['bid_zone']} and {dataset}")
     print(f"  Saved at: {state['saved_at']}")
     if state["split_time"]:
         print(f"  Split time: {state['split_time']}")
