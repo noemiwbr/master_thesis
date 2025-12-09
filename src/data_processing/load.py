@@ -535,17 +535,18 @@ def load_and_preprocess_forecast_data(
 
 # Wind power shifted +/- 1 hour and hour as additional feature
 def add_shifted_features(weather_forecast_selected):
-    weather_forecast_selected["wind_speed_10m-1"] = weather_forecast_selected.groupby(
+    weather_forecast = weather_forecast_selected.copy()
+    weather_forecast.loc[:, "wind_speed_10m-1"] = weather_forecast_selected.groupby(
         "windpark"
     )["wind_speed_10m"].shift(-1)
-    weather_forecast_selected["wind_speed_10m+1"] = weather_forecast_selected.groupby(
+    weather_forecast.loc[:, "wind_speed_10m+1"] = weather_forecast_selected.groupby(
         "windpark"
     )["wind_speed_10m"].shift(+1)
-    weather_forecast_selected = weather_forecast_selected.dropna(
+    weather_forecast = weather_forecast.dropna(
         subset=["wind_speed_10m-1", "wind_speed_10m+1"]
     )
-    weather_forecast_selected["hour"] = weather_forecast_selected.index.hour
-    return weather_forecast_selected
+    weather_forecast.loc[:, "hour"] = weather_forecast.index.hour
+    return weather_forecast
 
 
 def parse_evaluation_date(date):
@@ -720,8 +721,6 @@ def load_evaluation_data(
     weather_data_period = []
     wind_data_period = []
 
-    feature_cols, site_meta_cols, _ = get_feature_columns()
-
     # Load data for each date
     for date in dates:
 
@@ -733,6 +732,8 @@ def load_evaluation_data(
 
         # 2. Construct file paths and load raw data
         windpower_paths = get_evaluation_file_paths(date_str, data_path, dataset)
+
+        feature_cols, site_meta_cols, _ = get_feature_columns()
 
         if dataset == "nowcast":
             (
