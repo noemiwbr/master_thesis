@@ -702,6 +702,7 @@ def load_evaluation_data(
     dataset="nowcast",
     ensemble_member=0,
     data_path="../data",
+    variance_feature=True,
 ):
     """
     Load and preprocess evaluation data for a specific dates.
@@ -795,42 +796,43 @@ def load_evaluation_data(
                 weather_forecast_renamed, prefix="wind_direction_10m", n_members=15
             )
             # Calculate variance across ensemble members
-            exclude = {
-                "hour_x",
-                "hour_y",
-                "wind_speed_10m-1",
-                "wind_speed_10m+1",
-            }
+            if variance_feature:
+                exclude = {
+                    "hour_x",
+                    "hour_y",
+                    "wind_speed_10m-1",
+                    "wind_speed_10m+1",
+                }
 
-            feature_member_cols = {
-                feat: [f"{feat}_member_{i}" for i in range(15)]
-                for feat in feature_cols
-                if feat not in exclude
-            }
-            var_by_feature = {}
-            for feat, cols in feature_member_cols.items():
-                var_by_feature[feat] = (
-                    weather_forecast_transformed.groupby("lead_time_hours")[cols]
-                    .var()
-                    .mean(axis=1)
+                feature_member_cols = {
+                    feat: [f"{feat}_member_{i}" for i in range(15)]
+                    for feat in feature_cols
+                    if feat not in exclude
+                }
+                var_by_feature = {}
+                for feat, cols in feature_member_cols.items():
+                    var_by_feature[feat] = (
+                        weather_forecast_transformed.groupby("lead_time_hours")[cols]
+                        .var()
+                        .mean(axis=1)
+                    )
+                weather_vars = pd.DataFrame(var_by_feature)
+                from sklearn.preprocessing import StandardScaler
+
+                scaler = StandardScaler()
+                weather_vars_scaled = pd.DataFrame(
+                    scaler.fit_transform(weather_vars),
+                    index=weather_vars.index,
+                    columns=weather_vars.columns,
                 )
-            weather_vars = pd.DataFrame(var_by_feature)
-            from sklearn.preprocessing import StandardScaler
+                overall_variance = weather_vars_scaled.mean(axis=1)
 
-            scaler = StandardScaler()
-            weather_vars_scaled = pd.DataFrame(
-                scaler.fit_transform(weather_vars),
-                index=weather_vars.index,
-                columns=weather_vars.columns,
-            )
-            overall_variance = weather_vars_scaled.mean(axis=1)
+                weather_forecast_transformed = weather_forecast_transformed.join(
+                    overall_variance.rename("variance"), on="lead_time_hours"
+                )
 
-            weather_forecast_transformed = weather_forecast_transformed.join(
-                overall_variance.rename("variance"), on="lead_time_hours"
-            )
-
-            feature_cols += ["variance"]
-            # ----variance calculation----
+                feature_cols += ["variance"]
+                # ----variance calculation----
 
             weather_data = select_ensemble_member(
                 weather_forecast_transformed, member=ensemble_member
