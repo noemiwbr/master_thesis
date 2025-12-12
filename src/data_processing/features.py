@@ -26,7 +26,7 @@ def sin_cos_transform(df, columns=None, prefix=None, n_members=None):
     sin_cos_transformed = pd.DataFrame(
         jnp.concatenate([x, y], axis=1), columns=new_cols_x + new_cols_y, index=df.index
     )
-    return pd.concat([df, sin_cos_transformed], axis=1)
+    return pd.concat([df, sin_cos_transformed], axis=1).drop(cols, axis=1)
 
 
 # Scaling of input features

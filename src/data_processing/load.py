@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import jax.numpy as jnp
 import re
+import re
+from collections import defaultdict
+
 from data_processing.preprocess import (
     filter_bid_zone,
     align_windpower_and_weather,
@@ -123,40 +126,6 @@ def scale_site_metadata(sites_meta_unscaled, scaler_params=None):
 
     sites_meta = ((sites_meta_unscaled - mean_sites) / std_sites)[:, None]
     return sites_meta, scaler_params
-
-
-# TODO only used once
-def scale_and_extract_metadata(df_train_X, df_test_X, sites_meta_unscaled, scale_cols):
-    """
-    Scale features and site metadata, return scaler parameters.
-
-    Args:
-        df_train_X: Training features
-        df_test_X: Test features
-        sites_meta_unscaled: Unscaled site metadata
-        scale_cols: Columns to scale (excludes wind direction)
-
-    Returns:
-        Dict with scaled data and scaler parameters
-    """
-    # Scale features
-    df_train_X_scaled, df_test_X_scaled = scale_features(
-        df_train_X, df_test_X, scale_cols
-    )
-
-    # Get scaler parameters for later use
-    scaler_params = get_scaler_params(df_train_X, scale_cols)
-
-    # Scale site metadata
-    sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
-
-    return {
-        "df_train_X_scaled": df_train_X_scaled,
-        "df_test_X_scaled": df_test_X_scaled,
-        "sites_meta": sites_meta,
-        "scaler_params": scaler_params,
-        "site_scaler_params": site_scaler_params,
-    }
 
 
 def convert_to_arrays(df_train_X, df_test_X, df_train_Y, df_test_Y, feature_cols):
@@ -334,203 +303,289 @@ def load_and_preprocess_data(
 
 
 def load_and_preprocess_forecast_data(
-    scaler_params=None,
-    site_scaler_params=None,
     bid_zone="ELSPOT NO1",
     split_time=pd.Timestamp("2025-01-01 00:00:00", tz="CET"),
-    ensemble_member=0,
+    ensemble_members=None,
     data_path="../data",
 ):
     """
-    Load and preprocess forecast training data using existing scaler parameters
+    Load and preprocess forecast training data for multiple ensemble members.
 
-    Pipeline (same as for nowcast):
-    1. Load raw forecast data (parquet)
-    2. Rename columns and select ensemble member
-    3. Transform features (wind direction)
-    4. Calculate variance across ensemble members
-    5. Add time related features (hour of day, shifted wind speed)
-    6. Filter and align data for bid zone
-    7. Filter operational period
-    8. Split train/test
-    9. Scaling (apply existing scaler parameters or calculate new ones)
-    10. Convert to arrays
+    Pipeline:
+    1. Load raw data
+    2. Filter relevant bid zone and time steps
+    3. Transform wind direction and hour (sin/cos) for all 15 ensemble members
+    4. Define feature columns
+    5. Standardize features
+    6. Calculate variance
+    7. Add shifted wind speed features
+    8. Shape data into [timesteps, windparks, ensemble memebers, features]
+    9. Split into train and test data
+
+    Args:
+        bid_zone: Bidding zone name (e.g., "ELSPOT NO1")
+        split_time: Timestamp to split train/test
+        ensemble_members: List of ensemble members to load (e.g., [0, 1, 2] or None for all 15)
+        data_path: Path to data directory
+
+    Returns:
+        Dict with arrays, scaler parameters, and metadata
     """
-    print(f"Loading forecast data for {bid_zone}, ensemble member {ensemble_member}...")
+    # Default: use all 15 ensemble members
+    if ensemble_members is None:
+        ensemble_members = list(range(15))
 
-    # 1. Load raw data
+    print(
+        f"Loading forecast data for {bid_zone}, ensemble members {ensemble_members}..."
+    )
+
+    # ------------------------------------------------------------
+    # 1. Load data
     weather_forecast = load_weather_forecast_parquet(
         f"{data_path}/met_forecast.parquet"
     )
     windpower = load_windpower(f"{data_path}/wind_power_per_bidzone.parquet")
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
 
-    feature_cols, site_meta_cols, scale_cols = get_feature_columns()
+    # ------------------------------------------------------------
+    # 2. Filter relevant bid zone and time steps
 
-    # 2. Rename columns and select ensemble member
+    # Filter by bid zone
+    windparks = filter_bid_zone(windparks, bid_zone)
+    windpower = windpower[bid_zone].dropna()
+
+    # Rename columns for all ensemble members
     weather_forecast_renamed = rename_met_forecast_columns(weather_forecast)
 
-    # 3. Transform features (wind direction)
-    # ----variance calculation----
-    # TODO put variance calculation into function
-    # Wind direction transformation of all ensemble members to get correct variance
-    weather_forecast_transformed = sin_cos_transform(
-        weather_forecast_renamed, prefix="wind_direction_10m", n_members=15
+    # Merge wind park metadata into weather
+    weather_forecast_renamed = merge_metadata(weather_forecast_renamed, windparks)
+
+    # Filter period where all wind parks are operational
+    weather_forecast_renamed, windpower = filter_operational_period(
+        weather_forecast_renamed, windpower, windparks
     )
-
-    # 4. Calculate variance across ensemble members
-    exclude = {
-        "hour_x",
-        "hour_y",
-        "wind_speed_10m-1",
-        "wind_speed_10m+1",
-    }
-
-    feature_member_cols = {
-        feat: [f"{feat}_member_{i}" for i in range(15)]
-        for feat in feature_cols
-        if feat not in exclude
-    }
-    var_by_feature = {}
-    for feat, cols in feature_member_cols.items():
-        var_by_feature[feat] = (
-            weather_forecast_transformed.groupby("lead_time_hours")[cols]
-            .var()
-            .mean(axis=1)
-        )
-    weather_vars = pd.DataFrame(var_by_feature)
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler()
-    weather_vars_scaled = pd.DataFrame(
-        scaler.fit_transform(weather_vars),
-        index=weather_vars.index,
-        columns=weather_vars.columns,
-    )
-    overall_variance = weather_vars_scaled.mean(axis=1)
-
-    weather_forecast_transformed = weather_forecast_transformed.join(
-        overall_variance.rename("variance"), on="lead_time_hours"
-    )
-
-    feature_cols += ["variance"]
-    # ----variance calculation----
-
-    weather_forecast_selected = select_ensemble_member(
-        weather_forecast_transformed, member=ensemble_member
-    )
-    print(len(weather_forecast_selected.columns))
 
     # Filter to keep only 2-day ahead forecast (48h window starting at day+2 midnight)
-    print(f"Before 2-day ahead filtering: {len(weather_forecast_selected)} rows")
-    forecast_day = weather_forecast_selected["time"].dt.floor("D")
-    ref_day_plus_2 = weather_forecast_selected["time_ref"].dt.floor("D") + pd.Timedelta(
+    print(f"Before 2-day ahead filtering: {len(weather_forecast_renamed)} rows")
+    forecast_day = weather_forecast_renamed["time"].dt.floor("D")
+    ref_day_plus_2 = weather_forecast_renamed["time_ref"].dt.floor("D") + pd.Timedelta(
         days=2
     )
+    weather_forecast_filtered = weather_forecast_renamed[forecast_day == ref_day_plus_2]
+    print(f"After 2-day ahead filtering: {len(weather_forecast_filtered)} rows")
+    print(
+        f"Lead time range: {weather_forecast_filtered['lead_time_hours'].min():.1f}h "
+        f"to {weather_forecast_filtered['lead_time_hours'].max():.1f}h"
+    )
+    weather_forecast_filtered["hour"] = weather_forecast_filtered["time"].dt.hour
 
-    # Keep only rows where prediction day = reference day + 2
-    weather_forecast_selected = weather_forecast_selected[
-        forecast_day == ref_day_plus_2
+    # Set time as index
+    weather_forecast_filtered = weather_forecast_filtered.set_index("time")
+
+    # ------------------------------------------------------------
+    # 3. Transform wind direction and hour (sin/cos) for all 15 ensemble members
+    weather_forecast_transformed = sin_cos_transform(
+        weather_forecast_filtered, prefix="wind_direction_10m", n_members=15
+    )
+    weather_forecast_transformed = sin_cos_transform(
+        weather_forecast_transformed, columns=["hour"]
+    )
+    print([col for col in weather_forecast_transformed.columns if "wind" in col])
+    # ------------------------------------------------------------
+    # 4. Define feature columns
+    weather_feature_cols = [
+        "air_temperature_2m",
+        "air_pressure_at_sea_level",
+        "relative_humidity_2m",
+        "wind_speed_10m",
+        "wind_direction_10m_x",
+        "wind_direction_10m_y",
+    ]
+    scale_cols = [
+        f"{col}_member_{i}"
+        for col in weather_feature_cols
+        for i in range(15)
+        if not col.startswith("wind_direction")
     ]
 
-    print(f"After 2-day ahead filtering: {len(weather_forecast_selected)} rows")
-    print(
-        f"Lead time range: {weather_forecast_selected['lead_time_hours'].min():.1f}h "
-        f"to {weather_forecast_selected['lead_time_hours'].max():.1f}h"
+    global_cols = [
+        "hour_x",
+        "hour_y",
+        "avg_ensemble_var",
+    ]
+    shifted_cols = [
+        "wind_speed_10m-1",
+        "wind_speed_10m+1",
+    ]
+
+    site_meta_cols = ["operating_power_max", "windpark_id"]
+
+    # ------------------------------------------------------------
+    # 5. Standardize features
+
+    weather_train = weather_forecast_transformed[
+        weather_forecast_transformed.index <= split_time
+    ]
+    mean_train = weather_train[scale_cols].mean()
+    std_train = weather_train[scale_cols].std()
+
+    # TODO save in a useful way
+    scaler_params = {
+        "mean": mean_train.to_dict(),
+        "scale": std_train.to_dict(),
+        "columns": scale_cols,
+    }
+
+    weather_scaled = weather_forecast_transformed.copy()
+    weather_scaled[scale_cols] = (
+        weather_forecast_transformed[scale_cols] - mean_train
+    ) / std_train
+
+    # Scale site metadata
+    sites_meta_unscaled = (
+        weather_scaled[site_meta_cols]
+        .drop_duplicates()
+        .dropna()
+        .sort_values("windpark_id")["operating_power_max"]
+        .to_numpy()
+    )
+    sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
+
+    # ------------------------------------------------------------
+    # 6. Calculate variance
+
+    def split_col(col):
+        match = re.match(r"(.+)_member_(\d+)$", col)
+        if match:
+            return match.group(1), int(match.group(2))
+        return None, None
+
+    groups = defaultdict(list)
+
+    for col in weather_scaled.columns:
+        var, member = split_col(col)
+        if var is not None:
+            groups[var].append(col)
+
+    ensemble_var = {
+        var: weather_scaled[cols].var(axis=1) for var, cols in groups.items()
+    }
+    # TODO could also get the variance per features
+    # Calculates ensemble-variance per features and averages afterwards
+    df = pd.DataFrame(ensemble_var).add_suffix("_var")
+    print(df.head())
+    weather_scaled["avg_ensemble_var"] = (
+        pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
     )
 
-    weather_forecast_selected = weather_forecast_selected.set_index("time")
+    # ------------------------------------------------------------
+    # 7. Add shifted wind speed features
+    prefix = "wind_speed_10m"
+    for member in ensemble_members:
+        column_name = f"{prefix}_member_{member}"
 
-    # 5. Add time related features (hour of day, shifted wind speed)
-    weather_forecast_selected = add_shifted_features(weather_forecast_selected)
+        weather_forecast = weather_scaled.copy()
+        weather_scaled.loc[:, f"{prefix}-1_member_{member}"] = weather_forecast.groupby(
+            "windpark"
+        )[column_name].shift(-1)
+        weather_scaled.loc[:, f"{prefix}+1_member_{member}"] = weather_forecast.groupby(
+            "windpark"
+        )[column_name].shift(+1)
 
-    # Transform wind direction to sin/cos components
-    weather_forecast_selected = sin_cos_transform(
-        weather_forecast_selected, columns=["hour"]
-    )
-
-    # 6. Filter and align data for specific bid zone, calculate capacity factor
-    weather_multiindex, windpower_with_cf = prepare_bid_zone_data(
-        weather_forecast_selected, windpower, windparks, bid_zone
-    )
-
-    # 7. Filter period where all wind parks are operational
-    windparks_in_bid_zone = filter_bid_zone(windparks, bid_zone)
-    weather_filtered, windpower_filtered = filter_operational_period(
-        weather_multiindex, windpower_with_cf, windparks_in_bid_zone
-    )
-
-    # 8. Split into train and test sets
-
-    df_train_X, df_train_Y, df_test_X, df_test_Y, sites_meta_unscaled = (
-        split_train_test_meta(
-            weather_filtered,
-            windpower_filtered,
-            feature_cols,
-            site_meta_cols,
-            split_time,
+        weather_scaled = weather_scaled.dropna(
+            subset=[f"{prefix}-1_member_{member}", f"{prefix}+1_member_{member}"]
         )
+
+    # ------------------------------------------------------------
+    # 8. Shape data into [timesteps, windparks, ensemble memebers, features]
+
+    # Align weather and wind power on timestamps
+    weather_req_ensembles, windpower = align_windpower_and_weather(
+        windpower, weather_scaled
     )
 
-    # 9. Scaling TODO: Do I need scalar values later?
-    # Apply existing scaler parameters (from nowcast training)
-    if scaler_params is None:
-        print("No feature scaler parameter provided, computing new ones.")
-        df_train_X_scaled, df_test_X_scaled = scale_features(
-            df_train_X, df_test_X, scale_cols
+    weather_forecast_transformed = multiindex(weather_req_ensembles, windparks)
+
+    times = weather_forecast_transformed.index.get_level_values("time").unique()
+    windparks = weather_forecast_transformed.index.get_level_values("windpark").unique()
+
+    T = len(times)
+    W = len(windparks)
+    M = len(ensemble_members)
+
+    ensemble_vars = weather_feature_cols + shifted_cols
+    F_ens = len(ensemble_vars)
+    F_glob = len(global_cols)
+    F = F_ens + F_glob
+
+    # Select ensemble related features for the requested ensemble members
+    X_ens = np.zeros((T, W, M, F_ens), dtype=np.float32)
+
+    for f_idx, var in enumerate(ensemble_vars):
+        for m_idx, member in enumerate(ensemble_members):
+            col = f"{var}_member_{member}"
+
+            mat = (
+                weather_forecast_transformed[col]
+                .unstack(level="windpark")
+                .loc[times, windparks]
+                .to_numpy(dtype=np.float32)
+            )
+
+            X_ens[:, :, m_idx, f_idx] = mat
+
+    # Add global features to each ensemble member (duplicates!)
+    X_glob = np.zeros((T, W, M, F_glob), dtype=np.float32)
+
+    for f_idx, col in enumerate(global_cols):
+        mat = (
+            weather_forecast_transformed[col]
+            .unstack(level="windpark")
+            .loc[times, windparks]
+            .to_numpy(dtype=np.float32)
         )
 
-        # Compute new site metadata scaler
-        sites_meta, site_scaler_params = scale_site_metadata(
-            sites_meta_unscaled, scaler_params=None
-        )
+        X_glob[:, :, :, f_idx] = mat[:, :, None]
 
-        # Save scaler params
-        scaler_params = {
-            "mean": df_train_X[scale_cols].mean(),
-            "scale": df_train_X[scale_cols].std(),
-            "columns": scale_cols,
-        }
+    # Merge ensemble and global features
+    X = np.concatenate([X_ens, X_glob], axis=3)
+    feature_names = ensemble_vars + global_cols
 
-    # Use provided scalar parameters
-    else:
-        print("Using provided scaler parameters.")
-        df_train_X_scaled = apply_scaler_params(df_train_X, scaler_params)
-        df_test_X_scaled = apply_scaler_params(df_test_X, scaler_params)
+    assert X.shape == (T, W, M, F)
 
-        # Use provided scaler for site metadata
-        sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
+    # ------------------------------------------------------------
+    # 9. Split into train and test data
+    times = pd.DatetimeIndex(times)
 
-    # 10. Convert to numpy/JAX arrays
-    arrays = convert_to_arrays(
-        df_train_X_scaled,
-        df_test_X_scaled,
-        df_train_Y,
-        df_test_Y,
-        feature_cols,
-    )
+    train_mask = times < split_time
+    test_mask = times >= split_time
 
-    # Validate data integrity
-    validate_preprocessing(
-        weather_filtered,
-        windpower_filtered,
-        df_train_X,
-        df_train_Y,
-        df_test_X,
-        df_test_Y,
-    )
+    X_train = X[train_mask, :, :, :]
+    X_test = X[test_mask, :, :, :]
 
-    print(f"Preprocessing done. X_train shape: {arrays['X_train'].shape}")
-    print(f"Preprocessing done. X_test shape: {arrays['X_test'].shape}")
+    # Calculate capacity factor
+    windpower_with_cf = capacity_factor(bid_zone, windpower)
+    Y_train = windpower_with_cf[train_mask]
+    Y_test = windpower_with_cf[test_mask]
+
+    # Convert targets
+    Y_train = convert_targets_to_arrays(Y_train, "Y_train_")
+    Y_test = convert_targets_to_arrays(Y_test, "Y_test_")
+
+    print(f"Preprocessing done. X_train shape: {X_train.shape}")
+    print(f"Preprocessing done. X_test shape: {X_test.shape}")
 
     # Return combined results
     return {
-        **arrays,
+        "X_train": X_train,
+        "X_test": X_test,
+        **Y_train,
+        **Y_test,
         "sites_meta": sites_meta,
-        "feature_cols": feature_cols,
+        "feature_cols": feature_names,
+        "ensemble_members": ensemble_members,
         "scaler_params": scaler_params,
         "site_scaler_params": site_scaler_params,
-        "feature_cols": feature_cols,
     }
 
 
@@ -933,7 +988,7 @@ def rename_met_forecast_columns(df):
     Handles ensemble members and drops columns not present in nowcast (e.g., gust).
     Handles both single-digit (_0, _1) and zero-padded (_00, _01) member formats.
     """
-
+    print(df.index)
     renamed = {}
     columns_to_drop = []
 
@@ -1000,7 +1055,7 @@ def rename_met_forecast_columns(df):
     # Drop columns not in nowcast (like gust)
     if columns_to_drop:
         print(f"Dropping {len(columns_to_drop)} gust columns not present in nowcast")
-        df_renamed = df_renamed.drop(columns=columns_to_drop, errors="ignore")
+        df_renamed = df_renamed.drop(columns=columns_to_drop)
 
     print(f"\nColumn mapping summary:")
     print(f"  Original columns: {len(df.columns)}")
@@ -1008,6 +1063,7 @@ def rename_met_forecast_columns(df):
     print(f"  Dropped columns: {len(columns_to_drop)}")
     print(f"  Final columns: {len(df_renamed.columns)}")
 
+    print(f"\n {df_renamed.index}")
     return df_renamed
 
 

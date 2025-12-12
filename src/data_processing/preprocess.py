@@ -28,28 +28,23 @@ def merge_metadata(weather_in_bid_zone, windparks_in_bid_zone):
         weather_in_bid_zone["windpark"].isin(valid_windparks)
     ]
 
-    result = (
-        filtered_weather.merge(
-            windparks_in_bid_zone.reset_index().rename(
-                columns={"index": "windpark_id"}
-            )[
-                [
-                    "substation_name",
-                    "windpark_id",
-                    "operating_power_max",
-                    "prod_start_new",
-                ]
-            ],
-            left_on="windpark",
-            right_on="substation_name",
-            how="left",
-        )
-        .set_index(filtered_weather.index)
-        .drop(columns=["substation_name", "wind_direction_10m"])
-    )
+    result = filtered_weather.merge(
+        windparks_in_bid_zone.reset_index().rename(columns={"index": "windpark_id"})[
+            [
+                "substation_name",
+                "windpark_id",
+                "operating_power_max",
+                "prod_start_new",
+            ]
+        ],
+        left_on="windpark",
+        right_on="substation_name",
+        how="left",
+    ).set_index(filtered_weather.index)
     return result
 
 
+# TODO die Funktion macht gar nicht was sie soll
 def multiindex(weather_in_bid_zone, windparks_in_bid_zone):
     weather_in_bid_zone.index.name = "time"
     weather_in_bid_zone = weather_in_bid_zone.set_index(
@@ -90,7 +85,6 @@ def split_train_test_meta(
     weather_in_bid_zone, windpower_in_bid_zone, feature_cols, site_meta_cols, split_time
 ):
 
-    columns = windpower_in_bid_zone.columns
     # TODO use inverted masks for split
     train_mask_power = windpower_in_bid_zone.index < split_time
     test_mask_power = windpower_in_bid_zone.index >= split_time
@@ -100,8 +94,8 @@ def split_train_test_meta(
     df_train_X = weather_in_bid_zone.loc[train_mask_weather, feature_cols].copy()
     df_test_X = weather_in_bid_zone.loc[test_mask_weather, feature_cols].copy()
 
-    df_train_Y = windpower_in_bid_zone.loc[train_mask_power, columns]
-    df_test_Y = windpower_in_bid_zone.loc[test_mask_power, columns]
+    df_train_Y = windpower_in_bid_zone.loc[train_mask_power]
+    df_test_Y = windpower_in_bid_zone.loc[test_mask_power]
 
     sites_meta = (
         weather_in_bid_zone[site_meta_cols]
