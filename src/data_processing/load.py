@@ -431,8 +431,8 @@ def load_and_preprocess_forecast_data(
 
     # TODO save in a useful way
     scaler_params = {
-        "mean": mean_train.to_dict(),
-        "scale": std_train.to_dict(),
+        "mean": mean_train.to_numpy(dtype=np.float32),
+        "scale": std_train.to_numpy(dtype=np.float32),
         "columns": scale_cols,
     }
 
@@ -837,93 +837,6 @@ def load_evaluation_data(
                 (windpower.index >= target_start) & (windpower.index <= target_end)
             ]
 
-        elif dataset == "forecast":  # forecast
-            path_to_weather, path_to_windpower1, path_to_windpower2 = windpower_paths
-
-            # Load forecast, rename columns, and select ensemble member
-            weather_forecast = load_weather_forecast(path_to_weather)
-            weather_forecast_renamed = rename_met_forecast_columns(weather_forecast)
-
-            # ----variance calculation----
-            # TODO put variance calulcation in a function
-            # Wind direction transformation of all ensemble members to get correct variance
-            weather_forecast_transformed = sin_cos_transform(
-                weather_forecast_renamed, prefix="wind_direction_10m", n_members=15
-            )
-            # Calculate variance across ensemble members
-            if variance_feature:
-                exclude = {
-                    "hour_x",
-                    "hour_y",
-                    "wind_speed_10m-1",
-                    "wind_speed_10m+1",
-                }
-
-                feature_member_cols = {
-                    feat: [f"{feat}_member_{i}" for i in range(15)]
-                    for feat in feature_cols
-                    if feat not in exclude
-                }
-                var_by_feature = {}
-                for feat, cols in feature_member_cols.items():
-                    var_by_feature[feat] = (
-                        weather_forecast_transformed.groupby("lead_time_hours")[cols]
-                        .var()
-                        .mean(axis=1)
-                    )
-                weather_vars = pd.DataFrame(var_by_feature)
-                from sklearn.preprocessing import StandardScaler
-
-                scaler = StandardScaler()
-                weather_vars_scaled = pd.DataFrame(
-                    scaler.fit_transform(weather_vars),
-                    index=weather_vars.index,
-                    columns=weather_vars.columns,
-                )
-                overall_variance = weather_vars_scaled.mean(axis=1)
-
-                weather_forecast_transformed = weather_forecast_transformed.join(
-                    overall_variance.rename("variance"), on="lead_time_hours"
-                )
-
-                feature_cols += ["variance"]
-                # ----variance calculation----
-
-            weather_data = select_ensemble_member(
-                weather_forecast_transformed, member=ensemble_member
-            )
-            # Set time as index to match nowcast format
-            weather_data = weather_data.set_index("time")
-            weather_data = add_shifted_features(weather_data)
-
-            weather_data = sin_cos_transform(weather_data, columns=["hour"])
-
-            # Load and combine two windpower files (shifted by 11 hours)
-            windpower1 = load_windpower(path_to_windpower1)
-            windpower2 = load_windpower(path_to_windpower2)
-            # Concatenate and sort by timestamp
-            windpower = pd.concat([windpower1, windpower2]).sort_index()
-
-            # Filter to target prediction day (date + 2 days, 00:00-23:00)
-            forecast_date = pd.to_datetime(date_str, format="%Y%m%d")
-            target_date = forecast_date + pd.Timedelta(days=2)
-            target_start = target_date.replace(hour=0, minute=0, second=0)
-            target_end = target_date.replace(hour=23, minute=0, second=0)
-
-            # Localize to CET to match data timezone
-            target_start = target_start.tz_localize("CET")
-            target_end = target_end.tz_localize("CET")
-
-            # Filter weather forecast to target day
-            weather_data = weather_data[
-                (weather_data.index >= target_start)
-                & (weather_data.index <= target_end)
-            ]
-
-            # Filter windpower to target day
-            windpower = windpower[
-                (windpower.index >= target_start) & (windpower.index <= target_end)
-            ]
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -978,6 +891,297 @@ def load_evaluation_data(
         **Y_eval,
         "sites_meta": sites_meta,
         "feature_cols": feature_cols,
+        "index": timestamps,
+    }
+
+
+# TODO
+def load_evaluation_forecast_data(
+    dates,
+    scaler_params,
+    site_scaler_params,
+    bid_zone="ELSPOT NO1",
+    dataset="forecast",
+    ensemble_members=None,
+    data_path="../data",
+    variance_feature=True,
+):
+    """
+    Load and preprocess evaluation data for a specific dates.
+
+    Same preprocessing pipeline as training data,
+    but uses saved scaler parameters instead of fitting new ones. The function
+    follows these steps:
+    1. Parse dates
+    2. Construct file paths and load raw data
+    3. Transform features (wind direction)
+    4. Filter and align data for bid zone
+    5. Validate data quality (no NaN values)
+    6. Apply training scaler parameters
+    7. Convert to arrays
+    """
+    print(f"Loading evaluation data for {len(dates)} dates in zone {bid_zone}...")
+
+    # Default: use all 15 ensemble members
+    if ensemble_members is None:
+        ensemble_members = list(range(15))
+
+    windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
+    windparks = filter_bid_zone(windparks, bid_zone)
+    windpark_names = windparks["substation_name"].to_list()
+    print(windparks)
+    X_eval_list = []
+    Y_eval_list = []
+    sites_meta = None
+    feature_names = None
+    timestamps = []
+
+    # Load data for each date
+    for date in dates:
+
+        # ------------------------------------------------------------
+        # 1. Parse date and get file paths
+        date_parsed, date_str = parse_evaluation_date(date)
+        print(
+            f"Loading evaluation data for {date_parsed.strftime('%Y-%m-%d')} in zone {bid_zone}"
+        )
+
+        # ------------------------------------------------------------
+        # 2. Construct file paths and load raw data
+        windpower_paths = get_evaluation_file_paths(date_str, data_path, dataset)
+
+        # ------------------------------------------------------------
+        # 3. Define feature columns
+        weather_feature_cols = [
+            "air_temperature_2m",
+            "air_pressure_at_sea_level",
+            "relative_humidity_2m",
+            "wind_speed_10m",
+            "wind_direction_10m_x",
+            "wind_direction_10m_y",
+        ]
+
+        scale_cols = scaler_params["columns"]
+        mean = pd.Series(scaler_params["mean"], index=scale_cols)
+        std = pd.Series(scaler_params["scale"], index=scale_cols)
+
+        global_cols = [
+            "hour_x",
+            "hour_y",
+        ]
+        if variance_feature:
+            global_cols += ["avg_ensemble_var"]
+
+        shifted_cols = [
+            "wind_speed_10m-1",
+            "wind_speed_10m+1",
+        ]
+
+        site_meta_cols = ["operating_power_max", "windpark_id"]
+
+        if dataset == "forecast":  # forecast
+
+            # ------------------------------------------------------------
+            # 1. Load data and filter to prediction time period
+            path_to_weather, path_to_windpower1, path_to_windpower2 = windpower_paths
+
+            weather_forecast = load_weather_forecast(path_to_weather)
+            weather_forecast = rename_met_forecast_columns(weather_forecast)
+
+            # Merge wind park metadata into weather
+            weather_forecast = merge_metadata(weather_forecast, windparks)
+            # Load and combine two windpower files (shifted by 11 hours)
+            windpower1 = load_windpower(path_to_windpower1)
+            windpower2 = load_windpower(path_to_windpower2)
+            # Concatenate and sort by timestamp
+            windpower = pd.concat([windpower1, windpower2]).sort_index()[bid_zone]
+
+            # Filter to target prediction day (date + 2 days, 00:00-23:00)
+            forecast_date = pd.to_datetime(date_str, format="%Y%m%d")
+            target_date = forecast_date + pd.Timedelta(days=2)
+            target_start = target_date.replace(hour=0, minute=0, second=0)
+            target_end = target_date.replace(hour=23, minute=0, second=0)
+
+            # Localize to CET to match data timezone
+            target_start = target_start.tz_localize("CET")
+            target_end = target_end.tz_localize("CET")
+
+            # Filter windpower to target day
+            windpower = windpower[
+                (windpower.index >= target_start) & (windpower.index <= target_end)
+            ]
+
+            weather_forecast["hour"] = weather_forecast["time"].dt.hour
+
+            # Set time as index
+            weather_forecast = weather_forecast.set_index("time")
+
+            # ------------------------------------------------------------
+            # Transform wind direction and hour (sin/cos) for all 15 ensemble members
+            weather_forecast_transformed = sin_cos_transform(
+                weather_forecast, prefix="wind_direction_10m", n_members=15
+            )
+            weather_forecast_transformed = sin_cos_transform(
+                weather_forecast_transformed, columns=["hour"]
+            )
+
+            # ------------------------------------------------------------
+            # Apply scaler parameters
+            weather_scaled = weather_forecast_transformed.copy()
+
+            weather_scaled.loc[:, scale_cols] = (
+                weather_forecast_transformed.loc[:, scale_cols]
+                .sub(mean, axis=1)
+                .div(std, axis=1)
+            )
+
+            # ------------------------------------------------------------
+            # Calculate variance across ensemble members
+            if variance_feature:
+
+                def split_col(col):
+                    match = re.match(r"(.+)_member_(\d+)$", col)
+                    if match:
+                        return match.group(1), int(match.group(2))
+                    return None, None
+
+                groups = defaultdict(list)
+
+                for col in weather_scaled.columns:
+                    var, member = split_col(col)
+                    if var is not None:
+                        groups[var].append(col)
+
+                ensemble_var = {
+                    var: weather_scaled[cols].var(axis=1)
+                    for var, cols in groups.items()
+                }
+                # TODO could also get the variance per features
+                # Calculates ensemble-variance per features and averages afterwards
+
+                weather_scaled["avg_ensemble_var"] = (
+                    pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
+                )
+
+            # ------------------------------------------------------------
+            # Add shifted features
+            prefix = "wind_speed_10m"
+
+            for member in ensemble_members:
+
+                column_name = f"{prefix}_member_{member}"
+
+                weather_forecast = weather_scaled.copy()
+                weather_scaled.loc[:, f"{prefix}-1_member_{member}"] = (
+                    weather_forecast.groupby("windpark")[column_name].shift(-1)
+                )
+                weather_scaled.loc[:, f"{prefix}+1_member_{member}"] = (
+                    weather_forecast.groupby("windpark")[column_name].shift(+1)
+                )
+
+            # Filter weather forecast to target day (after shifting to avoid nan values)
+            weather_scaled = weather_scaled[
+                (weather_scaled.index >= target_start)
+                & (weather_scaled.index <= target_end)
+            ]
+
+            # ------------------------------------------------------------
+            # Shape data into [timesteps, windparks, ensemble memebers, features]
+            weather_forecast_transformed = multiindex(weather_scaled, windparks)
+
+            times = weather_forecast_transformed.index.get_level_values("time").unique()
+            windparks_from_weather = (
+                weather_forecast_transformed.index.get_level_values("windpark").unique()
+            )
+            assert len(windparks) == len(windparks_from_weather)
+
+            T = len(times)
+            W = len(windparks)
+            M = len(ensemble_members)
+
+            ensemble_cols = weather_feature_cols + shifted_cols
+            F_ens = len(ensemble_cols)
+            F_glob = len(global_cols)
+            F = F_ens + F_glob
+
+            # Select ensemble related features for the requested ensemble members
+            X_ens = np.zeros((T, W, M, F_ens), dtype=np.float32)
+
+            for f_idx, var in enumerate(ensemble_cols):
+                for m_idx, member in enumerate(ensemble_members):
+                    col = f"{var}_member_{member}"
+                    mat = (
+                        weather_forecast_transformed[col]
+                        .unstack(level="windpark")
+                        .loc[times, windpark_names]
+                        .to_numpy(dtype=np.float32)
+                    )
+
+                    X_ens[:, :, m_idx, f_idx] = mat
+
+            # Add global features to each ensemble member (duplicates!)
+            X_glob = np.zeros((T, W, M, F_glob), dtype=np.float32)
+
+            for f_idx, col in enumerate(global_cols):
+                mat = (
+                    weather_forecast_transformed[col]
+                    .unstack(level="windpark")
+                    .loc[times, windpark_names]
+                    .to_numpy(dtype=np.float32)
+                )
+
+                X_glob[:, :, :, f_idx] = mat[:, :, None]
+
+            # Merge ensemble and global features
+            X = np.concatenate([X_ens, X_glob], axis=3)
+            feature_names = ensemble_cols + global_cols
+            assert X.shape == (T, W, M, F)
+
+            # Calculate capacity factor
+            windpower_with_cf = capacity_factor(bid_zone, windpower)
+
+            # Convert targets
+            Y_eval = convert_targets_to_arrays(windpower_with_cf, "Y_eval_")
+
+            X_eval_list.append(X)
+            Y_eval_list.append(Y_eval)
+
+            # ------------------------------------------------------------
+            # Extract meta data
+            sites_meta_unscaled = (
+                weather_forecast_transformed[site_meta_cols]
+                .drop_duplicates()
+                .dropna()
+                .sort_values("windpark_id")["operating_power_max"]
+                .to_numpy()
+            )
+            sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
+
+            timestamps += (
+                weather_forecast_transformed.index.get_level_values("time")
+                .unique()
+                .to_list()
+            )
+
+        else:
+            raise ValueError(f"Unknown dataset: {dataset}")
+
+    X_eval = np.concatenate(X_eval_list, axis=0)
+    Y_acc = defaultdict(list)
+
+    for Y in Y_eval_list:
+        for k, v in Y.items():
+            Y_acc[k].append(v)
+
+    Y_eval = {k: np.concatenate(v) for k, v in Y_acc.items()}
+    print(f"Preprocessing done. X_eval shape: {X_eval.shape}")
+
+    # Return combined results
+    return {
+        "X_eval": X_eval,
+        **Y_eval,
+        "sites_meta": sites_meta,
+        "feature_cols": feature_names,
         "index": timestamps,
     }
 
