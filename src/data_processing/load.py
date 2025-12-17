@@ -73,6 +73,7 @@ def get_feature_columns():
         "hour_x",
         "hour_y",
     ]
+    feature_cols.sort()
     site_meta_cols = ["operating_power_max", "windpark_id"]
     scale_cols = [c for c in feature_cols if not c.startswith("wind_direction")]
 
@@ -401,6 +402,7 @@ def load_and_preprocess_forecast_data(
         "wind_direction_10m_x",
         "wind_direction_10m_y",
     ]
+
     scale_cols = [
         f"{col}_member_{i}"
         for col in weather_feature_cols
@@ -413,6 +415,7 @@ def load_and_preprocess_forecast_data(
         "hour_y",
         "avg_ensemble_var",
     ]
+
     shifted_cols = [
         "wind_speed_10m-1",
         "wind_speed_10m+1",
@@ -514,17 +517,33 @@ def load_and_preprocess_forecast_data(
     M = len(ensemble_members)
 
     ensemble_vars = weather_feature_cols + shifted_cols
+    feature_cols = ensemble_vars + global_cols
+    feature_cols.sort()
+
     F_ens = len(ensemble_vars)
     F_glob = len(global_cols)
     F = F_ens + F_glob
 
     # Select ensemble related features for the requested ensemble members
-    X_ens = np.zeros((T, W, M, F_ens), dtype=np.float32)
+    X = np.zeros((T, W, M, F), dtype=np.float32)
 
-    for f_idx, var in enumerate(ensemble_vars):
-        for m_idx, member in enumerate(ensemble_members):
-            col = f"{var}_member_{member}"
+    # TODO: merge loops to ensure columns are sorted
+    for f_idx, var in enumerate(feature_cols):
+        if var in ensemble_vars:
+            for m_idx, member in enumerate(ensemble_members):
+                col = f"{var}_member_{member}"
 
+                mat = (
+                    weather_forecast_transformed[col]
+                    .unstack(level="windpark")
+                    .loc[times, windparks]
+                    .to_numpy(dtype=np.float32)
+                )
+
+                X[:, :, m_idx, f_idx] = mat
+
+        # Add global features to each ensemble member (duplicates!)
+        elif var in global_cols:
             mat = (
                 weather_forecast_transformed[col]
                 .unstack(level="windpark")
@@ -532,26 +551,10 @@ def load_and_preprocess_forecast_data(
                 .to_numpy(dtype=np.float32)
             )
 
-            X_ens[:, :, m_idx, f_idx] = mat
+            X[:, :, :, f_idx] = mat[:, :, None]
 
-    # Add global features to each ensemble member (duplicates!)
-    X_glob = np.zeros((T, W, M, F_glob), dtype=np.float32)
-
-    for f_idx, col in enumerate(global_cols):
-        mat = (
-            weather_forecast_transformed[col]
-            .unstack(level="windpark")
-            .loc[times, windparks]
-            .to_numpy(dtype=np.float32)
-        )
-
-        X_glob[:, :, :, f_idx] = mat[:, :, None]
-
-    # Merge ensemble and global features
-    X = np.concatenate([X_ens, X_glob], axis=3)
-    feature_names = ensemble_vars + global_cols
-
-    assert X.shape == (T, W, M, F)
+        else:
+            raise KeyError("feature neither in ensemble_vars nor global_vars")
 
     # ------------------------------------------------------------
     # 9. Split into train and test data
@@ -582,7 +585,7 @@ def load_and_preprocess_forecast_data(
         **Y_train,
         **Y_test,
         "sites_meta": sites_meta,
-        "feature_cols": feature_names,
+        "feature_cols": feature_cols,
         "ensemble_members": ensemble_members,
         "scaler_params": scaler_params,
         "site_scaler_params": site_scaler_params,
@@ -755,9 +758,7 @@ def load_evaluation_data(
     site_scaler_params,
     bid_zone="ELSPOT NO1",
     dataset="nowcast",
-    ensemble_member=0,
     data_path="../data",
-    variance_feature=True,
 ):
     """
     Load and preprocess evaluation data for a specific dates.
@@ -929,11 +930,9 @@ def load_evaluation_forecast_data(
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
     windparks = filter_bid_zone(windparks, bid_zone)
     windpark_names = windparks["substation_name"].to_list()
-    print(windparks)
     X_eval_list = []
     Y_eval_list = []
     sites_meta = None
-    feature_names = None
     timestamps = []
 
     # Load data for each date
@@ -1100,42 +1099,38 @@ def load_evaluation_forecast_data(
             M = len(ensemble_members)
 
             ensemble_cols = weather_feature_cols + shifted_cols
+            feature_cols = ensemble_cols + global_cols
+            feature_cols.sort()
+
             F_ens = len(ensemble_cols)
             F_glob = len(global_cols)
             F = F_ens + F_glob
 
             # Select ensemble related features for the requested ensemble members
-            X_ens = np.zeros((T, W, M, F_ens), dtype=np.float32)
+            X = np.zeros((T, W, M, F), dtype=np.float32)
 
-            for f_idx, var in enumerate(ensemble_cols):
-                for m_idx, member in enumerate(ensemble_members):
-                    col = f"{var}_member_{member}"
+            for f_idx, var in enumerate(feature_cols):
+                if var in ensemble_cols:
+                    for m_idx, member in enumerate(ensemble_members):
+                        col = f"{var}_member_{member}"
+                        mat = (
+                            weather_forecast_transformed[col]
+                            .unstack(level="windpark")
+                            .loc[times, windpark_names]
+                            .to_numpy(dtype=np.float32)
+                        )
+
+                        X[:, :, m_idx, f_idx] = mat
+                elif var in global_cols:
                     mat = (
                         weather_forecast_transformed[col]
                         .unstack(level="windpark")
                         .loc[times, windpark_names]
                         .to_numpy(dtype=np.float32)
                     )
-
-                    X_ens[:, :, m_idx, f_idx] = mat
-
-            # Add global features to each ensemble member (duplicates!)
-            X_glob = np.zeros((T, W, M, F_glob), dtype=np.float32)
-
-            for f_idx, col in enumerate(global_cols):
-                mat = (
-                    weather_forecast_transformed[col]
-                    .unstack(level="windpark")
-                    .loc[times, windpark_names]
-                    .to_numpy(dtype=np.float32)
-                )
-
-                X_glob[:, :, :, f_idx] = mat[:, :, None]
-
-            # Merge ensemble and global features
-            X = np.concatenate([X_ens, X_glob], axis=3)
-            feature_names = ensemble_cols + global_cols
-            assert X.shape == (T, W, M, F)
+                    X[:, :, :, f_idx] = mat[:, :, None]
+                else:
+                    raise KeyError("feature neither in ensemble_vars nor global_vars")
 
             # Calculate capacity factor
             windpower_with_cf = capacity_factor(bid_zone, windpower)
@@ -1181,7 +1176,7 @@ def load_evaluation_forecast_data(
         "X_eval": X_eval,
         **Y_eval,
         "sites_meta": sites_meta,
-        "feature_cols": feature_names,
+        "feature_cols": feature_cols,
         "index": timestamps,
     }
 
