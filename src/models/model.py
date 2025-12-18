@@ -120,6 +120,87 @@ class WindPowerQuantile(nn.Module):
         return y_q
 
 
+class WindPowerQuantileEnsembles(nn.Module):
+    def __init__(self, num_features, quantiles=(0.025, 0.5, 0.975), target="gen"):
+        super().__init__()
+        self.quantiles = quantiles
+        Q = len(quantiles)
+        assert 0.5 in quantiles, "Median must be included in the quantiles"
+
+        assert target == "gen" or target == "cf", "Taget must be either gen or cf"
+        function_mapping = {"gen": nn.Softplus(), "cf": torch.sigmoid}
+        self.monotonic_function = function_mapping[target]
+
+        # Indices
+        self.mid_idx = (self.quantiles == 0.5).nonzero()[0].item()
+        self.left_count = self.mid_idx
+        self.right_count = Q - self.mid_idx - 1
+
+        self.shared_mlp = nn.Sequential(
+            nn.Linear(num_features, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+        )
+
+        # Quantile heads
+        self.median_head_0 = nn.Linear(8, 1)
+        self.left_head_0 = nn.Linear(8, self.left_count)  # for tau < 0.5
+        self.right_head_0 = nn.Linear(8, self.right_count)  # for tau > 0.5
+
+        # self.median_head_others = nn.Linear(8, 1)
+        # self.left_head_others = nn.Linear(8, self.left_count)  # for tau < 0.5
+        # self.right_head_others = nn.Linear(8, self.right_count)  # for tau > 0.5
+
+    def forward(self, x):
+        """
+        x: [timesteps, num_sites, ensemble_members, num_features]
+        """
+        y_site_q = self.shared_mlp(x)  # [T, S, E, Q]
+        y_sum_q = y_site_q.sum(dim=1)  # [T, E, 8]
+
+        mlp_out_0 = y_sum_q[:, 0]  # [T, 8]
+        mlp_out_others = y_sum_q[:, 1:].mean(dim=1)  # [T, 8]
+
+        # Median [T, 1]
+        m_0 = self.median_head_0(mlp_out_0)
+        m_others = self.median_head_0(mlp_out_others)
+
+        # Positive and negative distances
+        d_left_0 = self.monotonic_function(
+            self.left_head_0(mlp_out_0)
+        )  # [T, left_count]
+        d_right_0 = self.monotonic_function(
+            self.right_head_0(mlp_out_0)
+        )  # [T, right_count]
+
+        d_left_others = self.monotonic_function(
+            self.left_head_0(mlp_out_others)
+        )  # [T, left_count]
+        d_right_others = self.monotonic_function(
+            self.right_head_0(mlp_out_others)
+        )  # [T, right_count]
+
+        # Quantiles left and right of median
+        q_left_0 = m_0 - torch.flip(torch.cumsum(d_left_0, dim=-1), dims=[-1])
+        q_right_0 = m_0 + torch.cumsum(d_right_0, dim=-1)
+
+        q_left_others = m_others - torch.flip(
+            torch.cumsum(d_left_others, dim=-1), dims=[-1]
+        )
+        q_right_others = m_others + torch.cumsum(d_right_others, dim=-1)
+
+        # Aggregate member 0 and other members median and quantiles
+        m = torch.stack([m_0, m_others], dim=0).mean(dim=0)
+
+        q_left = torch.stack([q_left_0, q_left_others]).mean(dim=0)
+        q_right = torch.stack([q_right_0, q_right_others]).mean(dim=0)
+
+        # concat: [T, quantiles]
+        y_q = self.monotonic_function(torch.cat([q_left, m, q_right], dim=-1))
+        return y_q
+
+
 def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     N, S, F = X.shape
 
