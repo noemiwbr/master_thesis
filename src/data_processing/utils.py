@@ -10,41 +10,45 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 import torch
-from models.model import WindPowerQuantile, WindPowerModel_simple
+import pandas as pd
+from models.model import (
+    WindPowerQuantile,
+    WindPowerModel_simple,
+    WindPowerQuantileEnsembles,
+)
+from data_processing.load import (
+    load_weather_forecast_parquet,
+    rename_met_forecast_columns,
+)
 
 
 def save_checkpoint(
     samples,
-    model_name="bnn",
-    args=None,
+    model_cfg,
     rng_key=None,
     rng_key_predict=None,
     dir_path="../checkpoints",
-    dataset="now",
-    bid_zone="ELSPOT_NO1",
+    dataset="forecast",
 ):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{model_name}_{timestamp}_{dataset}_{bid_zone}.pkl"
+    bid_zone_clean = model_cfg.data.bid_zone.replace(" ", "_")
+    filename = f"{model_cfg.name}_{timestamp}_{dataset}_{bid_zone_clean}.pkl"
     path = os.path.join(dir_path, filename)
 
     # Bundle all relevant information into one dictionary
     state = {
-        "model_name": model_name,
-        "timestamp": timestamp,
         "samples": samples,
-        "args": args,
         "rng_key": rng_key,
         "rng_key_predict": rng_key_predict,
-        "bid_zone": bid_zone,
-        "dataset": dataset,
+        "model_cfg": model_cfg,
     }
 
     with open(path, "wb") as f:
         pickle.dump(state, f)
 
-    print(f"Saved checkpoint for model '{model_name}': {path}")
+    print(f"Saved checkpoint for model '{model_cfg.name}': {path}")
     return path
 
 
@@ -138,44 +142,32 @@ def load_checkpoint(model_name=None, file_name=None, dir_path="../checkpoints"):
 
 def save_torch_checkpoint(
     model,
-    optimizer=None,
-    model_name="WindPowerModel_simple",
-    bid_zone="ELSPOT_NO1",
-    quantiles=None,
-    num_features=None,
-    dataset="now",
-    target="gen",
+    model_cfg,
+    optimizer,
+    num_features,
+    losses,
+    dataset="forecast",
     dir_path="../checkpoints",
 ):
 
     os.makedirs(dir_path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    bid_zone_clean = bid_zone.replace(" ", "_")
-    filename = f"{model_name}_{timestamp}_{dataset}_{target}_{bid_zone_clean}.pt"
+    bid_zone_clean = model_cfg.data.bid_zone.replace(" ", "_")
+    filename = f"{model_cfg.name}_{timestamp}_{dataset}_{model_cfg.params.target}_{bid_zone_clean}.pt"
     path = os.path.join(dir_path, filename)
 
     # Save model weights, optimizer state, and model configuration
     checkpoint = {
-        "model_name": model_name,
-        "bid_zone": bid_zone,
         "model_state_dict": model.state_dict(),
         "model_class": model.__class__.__name__,
-        "dataset": dataset,
-        "target": target,
+        "model_cfg": model_cfg,
+        "num_features": num_features,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "losses": losses,
     }
 
-    # Save model configuration for reconstruction
-    if quantiles is not None:
-        checkpoint["quantiles"] = quantiles
-    if num_features is not None:
-        checkpoint["num_features"] = num_features
-
-    if optimizer is not None:
-        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
-
     torch.save(checkpoint, path)
-
     print(f"Saved checkpoint: {filename}")
 
     return path
@@ -205,23 +197,23 @@ def load_torch_model(
         raise FileNotFoundError(f"Checkpoint file not found: {path}")
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    print(checkpoint)
+    model_class_name = checkpoint["model_cfg"].name
+    num_features = checkpoint["num_features"]
+    target = checkpoint["model_cfg"].params.target
 
-    model_class_name = checkpoint.get("model_class", "WindPowerQuantile")
+    # Quantiles
+    if checkpoint["model_cfg"].params.quantiles is None:
+        quantiles = torch.linspace(0, 1, 51)
+    else:
+        quantiles = torch.tensor(checkpoint["model_cfg"].params.quantiles)
 
     if model_class_name == "WindPowerQuantile":
-        if "quantiles" not in checkpoint or "num_features" not in checkpoint:
-            raise ValueError(
-                "Checkpoint does not contain model configuration (quantiles, num_features). "
-                "Please save checkpoint with these parameters."
-            )
-
-        quantiles = checkpoint["quantiles"]
-        num_features = checkpoint["num_features"]
-        target = checkpoint["target"]
         model = WindPowerQuantile(num_features, quantiles, target)
     elif model_class_name == "WindPowerModel_simple":
-        num_features = checkpoint["num_features"]
         model = WindPowerModel_simple(num_features)
+    elif model_class_name == "WindPowerQuantileEnsembles":
+        model = WindPowerQuantileEnsembles(num_features, quantiles, target)
     else:
         raise ValueError(f"Unknown model class: {model_class_name}")
 
@@ -230,7 +222,7 @@ def load_torch_model(
 
     print(f"Loaded model: {os.path.basename(path)}")
     if "bid_zone" in checkpoint:
-        print(f"  Bid zone: {checkpoint['bid_zone']}")
+        print(f"  Bid zone: {checkpoint["model_cfg"].data.bid_zone}")
     print(f"  Model class: {model_class_name}")
 
     return model, checkpoint
@@ -408,3 +400,73 @@ class QuantileDistribution:
         plt.legend()
         plt.title("Smooth PDF via KDE")
         plt.show()
+
+
+def approximate_qr_intervals(
+    Y_pred,
+    taus,
+    cred_mass=0.95,
+    n_samples=5000,
+):
+    T = Y_pred.shape[0]
+
+    hdis = np.empty((T, 2))
+    medians = np.empty(T)
+    q_lower = np.empty(T)
+    q_upper = np.empty(T)
+
+    for i in range(T):
+        qd = QuantileDistribution(taus, Y_pred[i])
+        hdis[i] = qd.hdi(cred_mass=cred_mass, n_samples=n_samples)
+        medians[i] = qd.icdf(0.5)
+        q_lower[i] = qd.icdf((1 - cred_mass) / 2)
+        q_upper[i] = qd.icdf(1 - (1 - cred_mass) / 2)
+
+    return hdis, medians, q_lower, q_upper
+
+
+# Compute ensemble variance per lead time for multiple features.
+def compute_ensemble_variance_by_lead_time():
+    forecast = load_weather_forecast_parquet("../data/met_forecast.parquet")
+    forecast = rename_met_forecast_columns(forecast)
+    training_mask = forecast["time"] < pd.Timestamp("2025-01-01 00:00:00", tz="CET")
+    forecast = forecast.loc[training_mask]
+
+    feature_cols = [
+        "air_temperature_2m",
+        "air_pressure_at_sea_level",
+        "relative_humidity_2m",
+        "wind_speed_10m",
+    ]
+    feature_cols.sort()
+    # Map feature → member columns
+    feature_member_cols = {
+        feat: [f"{feat}_member_{i}" for i in range(15)] for feat in feature_cols
+    }
+
+    var_by_feature = {}
+
+    for feat, cols in feature_member_cols.items():
+        # Variance across members per windpark & lead time
+        df_var = (
+            forecast.groupby(["windpark", "lead_time_hours"])[cols]
+            .var()
+            .mean(axis=1)
+            .reset_index(name="var")
+        )
+
+        # Average across windparks
+        avg_var = df_var.groupby("lead_time_hours")["var"].mean()
+        var_by_feature[feat] = avg_var
+
+    # Combine features into DataFrame
+    var_overall_features = pd.DataFrame(var_by_feature)
+
+    # Overall variance across all features and members
+    all_member_cols = [f"{feat}_member_{i}" for feat in feature_cols for i in range(15)]
+
+    overall_variance = (
+        forecast.groupby("lead_time_hours")[all_member_cols].var().mean(axis=1)
+    )
+
+    return var_by_feature, var_overall_features, overall_variance

@@ -106,3 +106,26 @@ def split_train_test_meta(
     )
 
     return df_train_X, df_train_Y, df_test_X, df_test_Y, sites_meta
+
+
+import torch
+
+
+def to_tensor(data, cfg):
+    tensor_data = {}
+
+    for key, value in data.items():
+        if key in ["feature_cols", "scaler_params", "site_scaler_params"]:
+            tensor_data[key] = value
+            continue
+
+        if value is None:
+            tensor_data[key] = None
+            continue
+        else:
+            tensor_data[key] = torch.tensor(
+                value,
+                dtype=torch.float32,
+            )
+
+    return tensor_data

@@ -1,0 +1,15 @@
+backend: numpyro
+name: model_mw_gamma
+experiment_name: Gamma
+
+data:
+  path: ../configs/data/nowcast.yaml
+  bid_zone: ELSPOT NO1
+
+args:
+  num_warmup: 10
+  num_samples: 10
+  num_chains: 2
+
+params:
+  target: gen

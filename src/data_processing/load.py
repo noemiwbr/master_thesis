@@ -431,6 +431,7 @@ def load_and_preprocess_forecast_data(
     ]
     mean_train = weather_train[scale_cols].mean()
     std_train = weather_train[scale_cols].std()
+    std_train = std_train.clip(lower=1e-6)
 
     # TODO save in a useful way
     scaler_params = {
@@ -822,12 +823,13 @@ def load_evaluation_data(
             target_start = target_start.tz_localize("CET")
             target_end = target_end.tz_localize("CET")
 
+            weather_data = add_shifted_features(weather_data)
+
             # Filter weather to target day
             weather_data = weather_data[
                 (weather_data.index >= target_start)
                 & (weather_data.index <= target_end)
             ]
-            weather_data = add_shifted_features(weather_data)
 
             weather_data = sin_cos_transform(
                 weather_data, columns=["wind_direction_10m", "hour"]
@@ -1266,8 +1268,8 @@ def rename_met_forecast_columns(df):
     return df_renamed
 
 
+# Select a specific ensemble member from forecast data and rename to nowcast format
 def select_ensemble_member(df, member=0):
-    """Select a specific ensemble member from forecast data and rename to nowcast format"""
     # Identify columns for this member
     member_suffix = f"_member_{member}"
 
@@ -1297,3 +1299,20 @@ def select_ensemble_member(df, member=0):
     )
 
     return df_member
+
+
+def load_dataset(cfg):
+    if cfg.dataset == "nowcast":
+        data = load_and_preprocess_data(
+            bid_zone=cfg.bid_zone, split_time=pd.Timestamp(cfg.split_time, tz="CET")
+        )
+    elif cfg.dataset == "forecast":
+        data = load_and_preprocess_forecast_data(
+            bid_zone=cfg.bid_zone,
+            split_time=pd.Timestamp(cfg.split_time, tz="CET"),
+            ensemble_members=cfg.ensemble.members,
+        )
+    else:
+        raise ValueError(f"Unknown dataset {cfg.dataset}")
+
+    return data
