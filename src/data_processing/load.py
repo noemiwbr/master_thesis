@@ -1099,31 +1099,41 @@ def load_evaluation_forecast_data(
             # Add shifted features
             prefix = "wind_speed_10m"
 
+            shift_cols = []
             for member in ensemble_members:
+                col = f"{prefix}_member_{member}"
 
-                column_name = f"{prefix}_member_{member}"
+                # t-1 (previous hour) = shift(+1)
+                c_m1 = f"{prefix}-1_member_{member}"
+                weather_scaled[c_m1] = weather_scaled.groupby("windpark")[col].shift(+1)
+                shift_cols.append(c_m1)
 
-                weather_forecast = weather_scaled.copy()
-                weather_scaled.loc[:, f"{prefix}-1_member_{member}"] = (
-                    weather_forecast.groupby("windpark")[column_name].shift(-1)
-                )
-                weather_scaled.loc[:, f"{prefix}+1_member_{member}"] = (
-                    weather_forecast.groupby("windpark")[column_name].shift(+1)
-                )
+                # t+1 (next hour) = shift(-1)
+                c_p1 = f"{prefix}+1_member_{member}"
+                weather_scaled[c_p1] = weather_scaled.groupby("windpark")[col].shift(-1)
+                shift_cols.append(c_p1)
 
             # Filter weather forecast to target day (after shifting to avoid nan values)
             weather_scaled = weather_scaled[
                 (weather_scaled.index >= target_start)
                 & (weather_scaled.index <= target_end)
             ]
+            # drop once
+            weather_scaled = weather_scaled.dropna(subset=shift_cols)
 
             # ------------------------------------------------------------
             # Shape data into [timesteps, windparks, ensemble memebers, features]
             weather_forecast_transformed = multiindex(weather_scaled, windparks)
 
-            times = weather_forecast_transformed.index.get_level_values("time").unique()
+            times = (
+                weather_forecast_transformed.index.get_level_values("time")
+                .unique()
+                .sort_values()
+            )
             windparks_from_weather = (
-                weather_forecast_transformed.index.get_level_values("windpark").unique()
+                weather_forecast_transformed.index.get_level_values("windpark")
+                .unique()
+                .sort_values()
             )
             assert len(windparks) == len(windparks_from_weather)
 
@@ -1138,6 +1148,10 @@ def load_evaluation_forecast_data(
             F_ens = len(ensemble_cols)
             F_glob = len(global_cols)
             F = F_ens + F_glob
+
+            assert len(feature_cols) == len(
+                set(feature_cols)
+            ), "Duplicate feature names in feature_cols"
 
             # Select ensemble related features for the requested ensemble members
             X = np.zeros((T, W, M, F), dtype=np.float32)
@@ -1155,6 +1169,7 @@ def load_evaluation_forecast_data(
 
                         X[:, :, m_idx, f_idx] = mat
                 elif var in global_cols:
+                    col = var
                     mat = (
                         weather_forecast_transformed[col]
                         .unstack(level="windpark")
@@ -1167,6 +1182,7 @@ def load_evaluation_forecast_data(
 
             # Calculate capacity factor
             windpower_with_cf = capacity_factor(bid_zone, windpower)
+            assert windpower_with_cf.index.equals(times)
 
             # Convert targets
             Y_eval = convert_targets_to_arrays(windpower_with_cf, "Y_eval_")
