@@ -107,7 +107,7 @@ def filter_operational_period(weather_df, windpower_df, windparks_df):
     """Filter data to only include period where all wind parks are operational"""
 
     start_time = windparks_df["prod_start_new"].max()
-    weather_filtered = weather_df.loc[start_time:]
+    weather_filtered = weather_df[weather_df["time"] >= start_time]
     windpower_filtered = windpower_df.loc[start_time:]
 
     return weather_filtered, windpower_filtered
@@ -360,6 +360,10 @@ def load_and_preprocess_forecast_data(
 
     # Merge wind park metadata into weather
     weather_forecast_renamed = merge_metadata(weather_forecast_renamed, windparks)
+    assert (
+        weather_forecast_renamed["windpark"]
+        == weather_forecast_renamed["substation_name"]
+    ).all()
 
     # Filter period where all wind parks are operational
     weather_forecast_renamed, windpower = filter_operational_period(
@@ -372,7 +376,9 @@ def load_and_preprocess_forecast_data(
     ref_day_plus_2 = weather_forecast_renamed["time_ref"].dt.floor("D") + pd.Timedelta(
         days=2
     )
-    weather_forecast_filtered = weather_forecast_renamed[forecast_day == ref_day_plus_2]
+    weather_forecast_filtered = weather_forecast_renamed.loc[
+        forecast_day == ref_day_plus_2
+    ].copy()
     print(f"After 2-day ahead filtering: {len(weather_forecast_filtered)} rows")
     print(
         f"Lead time range: {weather_forecast_filtered['lead_time_hours'].min():.1f}h "
@@ -445,6 +451,8 @@ def load_and_preprocess_forecast_data(
         weather_forecast_transformed[scale_cols] - mean_train
     ) / std_train
 
+    print(weather_scaled[scale_cols].describe().loc[["mean", "std"]])
+
     # Scale site metadata
     sites_meta_unscaled = (
         weather_scaled[site_meta_cols]
@@ -485,23 +493,27 @@ def load_and_preprocess_forecast_data(
     # ------------------------------------------------------------
     # 7. Add shifted wind speed features
     prefix = "wind_speed_10m"
+    weather_scaled = weather_scaled.sort_values("windpark").sort_index()
+    shift_cols = []
+
     for member in ensemble_members:
-        column_name = f"{prefix}_member_{member}"
+        col = f"{prefix}_member_{member}"
 
-        weather_forecast = weather_scaled.copy()
-        weather_scaled.loc[:, f"{prefix}-1_member_{member}"] = weather_forecast.groupby(
-            "windpark"
-        )[column_name].shift(-1)
-        weather_scaled.loc[:, f"{prefix}+1_member_{member}"] = weather_forecast.groupby(
-            "windpark"
-        )[column_name].shift(+1)
+        # t-1 (previous hour) = shift(+1)
+        c_m1 = f"{prefix}-1_member_{member}"
+        weather_scaled[c_m1] = weather_scaled.groupby("windpark")[col].shift(+1)
+        shift_cols.append(c_m1)
 
-        weather_scaled = weather_scaled.dropna(
-            subset=[f"{prefix}-1_member_{member}", f"{prefix}+1_member_{member}"]
-        )
+        # t+1 (next hour) = shift(-1)
+        c_p1 = f"{prefix}+1_member_{member}"
+        weather_scaled[c_p1] = weather_scaled.groupby("windpark")[col].shift(-1)
+        shift_cols.append(c_p1)
+
+    # drop once -> loose first and last hour of dataset
+    weather_scaled = weather_scaled.dropna(subset=shift_cols)
 
     # ------------------------------------------------------------
-    # 8. Shape data into [timesteps, windparks, ensemble memebers, features]
+    # 8. Shape data into [timesteps, windparks, ensemble members, features]
 
     # Align weather and wind power on timestamps
     weather_req_ensembles, windpower = align_windpower_and_weather(
@@ -509,9 +521,20 @@ def load_and_preprocess_forecast_data(
     )
 
     weather_forecast_transformed = multiindex(weather_req_ensembles, windparks)
+    assert (
+        weather_forecast_transformed["operating_power_max"].notna().all()
+    )  # because filtered out earlier
 
-    times = weather_forecast_transformed.index.get_level_values("time").unique()
-    windparks = weather_forecast_transformed.index.get_level_values("windpark").unique()
+    times = (
+        weather_forecast_transformed.index.get_level_values("time")
+        .unique()
+        .sort_values()
+    )
+    windparks = (
+        weather_forecast_transformed.index.get_level_values("windpark")
+        .unique()
+        .sort_values()
+    )
 
     T = len(times)
     W = len(windparks)
@@ -524,6 +547,9 @@ def load_and_preprocess_forecast_data(
     F_ens = len(ensemble_vars)
     F_glob = len(global_cols)
     F = F_ens + F_glob
+    assert len(feature_cols) == len(
+        set(feature_cols)
+    ), "Duplicate feature names in feature_cols"
 
     # Select ensemble related features for the requested ensemble members
     X = np.zeros((T, W, M, F), dtype=np.float32)
@@ -545,6 +571,7 @@ def load_and_preprocess_forecast_data(
 
         # Add global features to each ensemble member (duplicates!)
         elif var in global_cols:
+            col = var
             mat = (
                 weather_forecast_transformed[col]
                 .unstack(level="windpark")
@@ -555,10 +582,11 @@ def load_and_preprocess_forecast_data(
             X[:, :, :, f_idx] = mat[:, :, None]
 
         else:
-            raise KeyError("feature neither in ensemble_vars nor global_vars")
+            raise KeyError(f"{var} neither in ensemble_vars nor global_cols")
 
     # ------------------------------------------------------------
     # 9. Split into train and test data
+    assert len(times) == X.shape[0]
     times = pd.DatetimeIndex(times)
 
     train_mask = times < split_time
@@ -569,6 +597,7 @@ def load_and_preprocess_forecast_data(
 
     # Calculate capacity factor
     windpower_with_cf = capacity_factor(bid_zone, windpower)
+    assert windpower_with_cf.index.equals(times)
     Y_train = windpower_with_cf[train_mask]
     Y_test = windpower_with_cf[test_mask]
 
@@ -596,16 +625,18 @@ def load_and_preprocess_forecast_data(
 # Wind power shifted +/- 1 hour and hour as additional feature
 def add_shifted_features(weather_forecast_selected):
     weather_forecast = weather_forecast_selected.copy()
+    weather_forecast = weather_forecast.sort_values("windpark").sort_index()
+
     weather_forecast.loc[:, "wind_speed_10m-1"] = weather_forecast_selected.groupby(
         "windpark"
-    )["wind_speed_10m"].shift(-1)
+    )["wind_speed_10m"].shift(+1)
     weather_forecast.loc[:, "wind_speed_10m+1"] = weather_forecast_selected.groupby(
         "windpark"
-    )["wind_speed_10m"].shift(+1)
+    )["wind_speed_10m"].shift(-1)
     weather_forecast = weather_forecast.dropna(
         subset=["wind_speed_10m-1", "wind_speed_10m+1"]
     )
-    weather_forecast.loc[:, "hour"] = weather_forecast.index.hour
+    weather_forecast["hour"] = weather_forecast.index.hour
     return weather_forecast
 
 
