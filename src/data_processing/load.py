@@ -107,7 +107,13 @@ def filter_operational_period(weather_df, windpower_df, windparks_df):
     """Filter data to only include period where all wind parks are operational"""
 
     start_time = windparks_df["prod_start_new"].max()
-    mask = weather_df.index.get_level_values("time") >= start_time
+
+    if weather_df.index.name is not None and "time" in weather_df.index.name:
+        weather_index = weather_df.index.get_level_values("time")
+    else:
+        weather_index = weather_df["time"]
+
+    mask = weather_index >= start_time
     weather_filtered = weather_df.loc[mask]
     windpower_filtered = windpower_df.loc[start_time:]
 
@@ -390,7 +396,7 @@ def load_and_preprocess_forecast_data(
         weather_forecast_renamed["windpark"]
         == weather_forecast_renamed["substation_name"]
     ).all()
-
+    print(weather_forecast_renamed.head())
     # Filter period where all wind parks are operational
     weather_forecast_renamed, windpower = filter_operational_period(
         weather_forecast_renamed, windpower, windparks
@@ -1422,6 +1428,7 @@ def select_ensemble_member(df, member=0):
 
 def load_dataset(cfg):
     if cfg.dataset == "nowcast":
+        print(cfg.bid_zone)
         data = load_and_preprocess_data(
             bid_zone=cfg.bid_zone, split_time=pd.Timestamp(cfg.split_time, tz="CET")
         )
