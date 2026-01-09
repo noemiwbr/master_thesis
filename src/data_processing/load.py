@@ -250,9 +250,13 @@ def load_and_preprocess_data(
     # Drop timestamps with mainentance events
     full_capacity_mask = np.isclose(
         windpower_filtered["available_capacity"],
-        sum(windparks_in_bid_zone["operating_power_max"]),
+        float(np.sum(windparks_in_bid_zone["operating_power_max"], dtype=np.float64)),
+        atol=0.5,
     )
     windpower_with_full_capacity = windpower_filtered.loc[full_capacity_mask]
+    assert (
+        len(windpower_with_full_capacity) > 0
+    ), "No data remaining after dropping timestamps with maintance events"
     dropped_timestamps = (~full_capacity_mask).sum()
     print(
         "Dropped hours due to maintenance:",
@@ -460,11 +464,87 @@ def load_and_preprocess_forecast_data(
 
     site_meta_cols = ["operating_power_max", "windpark_id"]
 
+    sites_meta_unscaled = (
+        weather_forecast_transformed[site_meta_cols]
+        .drop_duplicates()
+        .dropna()
+        .sort_values("windpark_id")["operating_power_max"]
+        .to_numpy()
+    )
     # ------------------------------------------------------------
-    # 5. Standardize features
+    # 5. Add shifted wind speed features
+    prefix = "wind_speed_10m"
+    weather_forecast_transformed = weather_forecast_transformed.sort_values(
+        "windpark"
+    ).sort_index()
+    shift_cols = []
 
-    weather_train = weather_forecast_transformed[
-        weather_forecast_transformed.index <= split_time
+    for member in ensemble_members:
+        col = f"{prefix}_member_{member}"
+
+        # t-1 (previous hour) = shift(+1)
+        c_m1 = f"{prefix}-1_member_{member}"
+        weather_forecast_transformed[c_m1] = weather_forecast_transformed.groupby(
+            "windpark"
+        )[col].shift(+1)
+        shift_cols.append(c_m1)
+
+        # t+1 (next hour) = shift(-1)
+        c_p1 = f"{prefix}+1_member_{member}"
+        weather_forecast_transformed[c_p1] = weather_forecast_transformed.groupby(
+            "windpark"
+        )[col].shift(-1)
+        shift_cols.append(c_p1)
+
+    # drop once -> loose first and last hour of dataset
+    weather_forecast_transformed = weather_forecast_transformed.dropna(
+        subset=shift_cols
+    )
+    print(
+        weather_forecast_transformed[
+            [
+                "windpark",
+                "wind_speed_10m_member_0",
+                "wind_speed_10m-1_member_0",
+                "wind_speed_10m+1_member_0",
+            ]
+        ].head(10)
+    )
+
+    # ------------------------------------------------------------
+    # 6. Calculate capacity factor and drop timesteps with changes
+
+    windpower_with_cf = capacity_factor(bid_zone, windpower)
+
+    # Drop timestamps with capacity change due to maintenance
+    full_capacity_mask = np.isclose(
+        windpower_with_cf["available_capacity"],
+        float(np.sum(sites_meta_unscaled, dtype=np.float64)),
+        atol=0.5,
+    )
+    print(windpower_with_cf["available_capacity"].head())
+    print(float(np.sum(sites_meta_unscaled, dtype=np.float64)))
+    print(sites_meta_unscaled)
+    windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
+    assert (
+        len(windpower_with_full_capacity) > 0
+    ), "No data remaining after dropping timestamps with maintance events"
+    dropped_timestamps = (~full_capacity_mask).sum()
+    print("Dropped hours:", (~full_capacity_mask).sum())
+    print(
+        "Fraction of dropped hours:",
+        dropped_timestamps / len(windpower_with_cf.index),
+    )
+    valid_times = windpower_with_full_capacity.index
+    weather_forecast_full_cap = weather_forecast_transformed.loc[
+        weather_forecast_transformed.index.isin(valid_times)
+    ]
+
+    # ------------------------------------------------------------
+    # 7. Standardize features
+
+    weather_train = weather_forecast_full_cap[
+        weather_forecast_full_cap.index <= split_time
     ]
     mean_train = weather_train[scale_cols].mean()
     std_train = weather_train[scale_cols].std()
@@ -477,25 +557,43 @@ def load_and_preprocess_forecast_data(
         "columns": scale_cols,
     }
 
-    weather_scaled = weather_forecast_transformed.copy()
+    weather_scaled = weather_forecast_full_cap.copy()
     weather_scaled[scale_cols] = (
-        weather_forecast_transformed[scale_cols] - mean_train
+        weather_forecast_full_cap[scale_cols] - mean_train
     ) / std_train
 
     print(weather_scaled[scale_cols].describe().loc[["mean", "std"]])
 
-    # Scale site metadata
-    sites_meta_unscaled = (
-        weather_scaled[site_meta_cols]
-        .drop_duplicates()
-        .dropna()
-        .sort_values("windpark_id")["operating_power_max"]
-        .to_numpy()
-    )
+    # Handle shifted columns, use same scaler as base column to avoid distribution shift
+    scale_shifted = [
+        f"{col}_member_{i}"
+        for col in ["wind_speed_10m+1", "wind_speed_10m-1"]
+        for i in range(15)
+    ]
+    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
+
+    for col in scale_shifted:
+        m = shifted_pattern.match(col)
+        if not m:
+            raise ValueError(f"Unexpected shifted wind speed column name: {col}")
+
+        i = m.group(1)
+        base_col = f"wind_speed_10m_member_{i}"
+
+        if base_col not in mean_train.index:
+            raise KeyError(
+                f"{base_col} not found in fitted scaler columns (scale_cols)."
+            )
+
+        mu = mean_train[base_col]
+        sigma = std_train[base_col]
+
+        weather_scaled[col] = (weather_forecast_full_cap[col] - mu) / sigma
+
     sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
 
     # ------------------------------------------------------------
-    # 6. Calculate variance
+    # 8. Calculate variance
 
     def split_col(col):
         match = re.match(r"(.+)_member_(\d+)$", col)
@@ -506,6 +604,9 @@ def load_and_preprocess_forecast_data(
     groups = defaultdict(list)
 
     for col in weather_scaled.columns:
+        # exclude shifted cols
+        if shifted_pattern.match(col):
+            continue
         var, member = split_col(col)
         if var is not None:
             groups[var].append(col)
@@ -519,48 +620,6 @@ def load_and_preprocess_forecast_data(
     weather_scaled["avg_ensemble_var"] = (
         pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
     )
-
-    # ------------------------------------------------------------
-    # 7. Add shifted wind speed features
-    prefix = "wind_speed_10m"
-    weather_scaled = weather_scaled.sort_values("windpark").sort_index()
-    shift_cols = []
-
-    for member in ensemble_members:
-        col = f"{prefix}_member_{member}"
-
-        # t-1 (previous hour) = shift(+1)
-        c_m1 = f"{prefix}-1_member_{member}"
-        weather_scaled[c_m1] = weather_scaled.groupby("windpark")[col].shift(+1)
-        shift_cols.append(c_m1)
-
-        # t+1 (next hour) = shift(-1)
-        c_p1 = f"{prefix}+1_member_{member}"
-        weather_scaled[c_p1] = weather_scaled.groupby("windpark")[col].shift(-1)
-        shift_cols.append(c_p1)
-
-    # drop once -> loose first and last hour of dataset
-    weather_scaled = weather_scaled.dropna(subset=shift_cols)
-
-    # ------------------------------------------------------------
-    # 8. Calculate capacity factor and drop timesteps with changes
-    windpower_with_cf = capacity_factor(bid_zone, windpower)
-
-    # Drop timestamps with capacity change due to maintenance
-    full_capacity_mask = np.isclose(
-        windpower_with_cf["available_capacity"], sum(sites_meta_unscaled)
-    )
-    windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
-    dropped_timestamps = (~full_capacity_mask).sum()
-    print("Dropped hours:", (~full_capacity_mask).sum())
-    print(
-        "Fraction of dropped hours:",
-        dropped_timestamps / len(windpower_with_cf.index),
-    )
-    valid_times = windpower_with_full_capacity.index
-    weather_scaled = weather_scaled.loc[
-        weather_scaled.index.get_level_values("time").isin(valid_times)
-    ]
 
     # ------------------------------------------------------------
     # 9. Shape data into [timesteps, windparks, ensemble members, features]
@@ -941,8 +1000,12 @@ def load_evaluation_data(
     # Drop timestamps with mainentance events
     full_capacity_mask = np.isclose(
         windpower_with_cf["available_capacity"],
-        sum(windparks_in_bid_zone["operating_power_max"]),
+        float(np.sum(windparks_in_bid_zone["operating_power_max"], dtype=np.float64)),
+        atol=0.5,
     )
+    print(windpower_with_cf["available_capacity"].head())
+    print(float(np.sum(windparks_in_bid_zone["operating_power_max"], dtype=np.float64)))
+    print(windparks_in_bid_zone["operating_power_max"])
     windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
     dropped_timestamps = (~full_capacity_mask).sum()
     print(
@@ -1204,7 +1267,9 @@ def load_evaluation_forecast_data(
 
             # Drop timestamps with capacity change due to maintenance
             full_capacity_mask = np.isclose(
-                windpower_with_cf["available_capacity"], sum(sites_meta_unscaled)
+                windpower_with_cf["available_capacity"],
+                float(np.sum(sites_meta_unscaled, dtype=np.float64)),
+                atol=0.5,
             )
             windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
             dropped_timestamps += (~full_capacity_mask).sum()
