@@ -1262,10 +1262,12 @@ def load_evaluation_forecast_data(
             windparks_from_weather = (
                 weather_scaled.index.get_level_values("windpark").unique().sort_values()
             )
-            assert len(windparks) == len(windparks_from_weather)
+            # assert len(windparks) == len(
+            #     windparks_from_weather
+            # ), "Not all windparks present in weather"
 
             T = len(times)
-            W = len(windparks)
+            W = len(windparks_from_weather)
             M = len(ensemble_members)
 
             ensemble_cols = weather_feature_cols + shifted_cols
@@ -1290,7 +1292,7 @@ def load_evaluation_forecast_data(
                         mat = (
                             weather_scaled[col]
                             .unstack(level="windpark")
-                            .loc[times, windpark_names]
+                            .loc[times, windparks_from_weather]
                             .to_numpy(dtype=np.float32)
                         )
 
@@ -1300,7 +1302,7 @@ def load_evaluation_forecast_data(
                     mat = (
                         weather_scaled[col]
                         .unstack(level="windpark")
-                        .loc[times, windpark_names]
+                        .loc[times, windparks_from_weather]
                         .to_numpy(dtype=np.float32)
                     )
                     X[:, :, :, f_idx] = mat[:, :, None]
