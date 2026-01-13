@@ -7,7 +7,7 @@ def filter_bid_zone(windparks, bid_zone: str):
     # Agg because windparks can have several eic_codes
     windparks_in_bid_zone = windparks[windparks["bidding_area"] == bid_zone]
     return windparks_in_bid_zone.groupby("substation_name", as_index=False).agg(
-        {"operating_power_max": "mean", "prod_start_new": "max"}
+        {"operating_power_max": "max", "prod_start_new": "max"}
     )
 
 
@@ -76,8 +76,38 @@ def capacity_factor(bid_zone, windpower_in_bid_zone):
     avail = capacity_factor_transformer.available[bid_zone].reindex(gen.index)
     cf = gen / avail
 
-    return pd.DataFrame(
-        {"generation": gen, "available_capacity": avail, "capacity_factor": cf}
+    maintenance_events = capacity_factor_transformer.maintenance_events.copy()
+    maintenance_events = maintenance_events[
+        maintenance_events["Area"] == bid_zone
+    ].dropna(subset=["Area", "Event Start", "Event Stop"])
+
+    def hourly_range_inclusive(start, stop):
+        return pd.date_range(start, stop, freq="h", inclusive="both")
+
+    maintenance_events["time"] = maintenance_events.apply(
+        lambda r: hourly_range_inclusive(r["Event Start"], r["Event Stop"]), axis=1
+    )
+
+    maintenance_hours_long = (
+        maintenance_events[["time"]]
+        .explode("time")
+        .drop_duplicates()
+        .loc[lambda df: df["time"].isin(windpower_in_bid_zone.index)]
+        .sort_values(["time"])
+        .reset_index(drop=True)
+    )
+
+    maintenance_hours = maintenance_hours_long["time"].nunique()
+    # total_hours = len(windpower_in_bid_zone.index)
+    # fraction = maintenance_hours / total_hours
+
+    print(f"Maintenance hours in operational period: {maintenance_hours}")
+
+    return (
+        pd.DataFrame(
+            {"generation": gen, "available_capacity": avail, "capacity_factor": cf}
+        ),
+        maintenance_hours_long,
     )
 
 

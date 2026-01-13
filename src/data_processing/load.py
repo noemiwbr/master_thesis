@@ -32,6 +32,11 @@ def load_weather_forecast(path: str):
 
 def load_weather_nowcast(path: str):
     df = pd.read_parquet(path)
+    NOWCAST_NAME_MAP = {
+        "Sørfj": "Sørfj. Vindkraft",
+        "Tonst": "Tonst. Vindpark",
+    }
+    df["windpark"] = df["windpark"].replace(NOWCAST_NAME_MAP)
     return df.tz_localize("UTC").tz_convert("CET")
 
 
@@ -81,14 +86,24 @@ def get_feature_columns():
 
 
 def prepare_bid_zone_data(weather_df, windpower_df, windparks_df, bid_zone):
-    """Filter and align data for a specific bidding zone, calculate capacity factor"""
+    """Filter and align data for a specific bidding zone, calculate capacity factor and drop maintanance hours"""
     # Filter by bid zone
     windparks_in_bid_zone = filter_bid_zone(windparks_df, bid_zone)
     windpower_in_bid_zone = windpower_df[bid_zone].dropna()
 
+    # Calculate capacity factor
+    windpower_with_cf, maintenance_hours = capacity_factor(
+        bid_zone, windpower_in_bid_zone
+    )
+
+    # Drop maintanance hours
+    windpower_clean = windpower_with_cf.loc[
+        ~windpower_with_cf.index.isin(maintenance_hours["time"])
+    ]
+
     # Align weather and wind power on timestamps
     weather_aligned, windpower_aligned = align_windpower_and_weather(
-        windpower_in_bid_zone, weather_df
+        windpower_clean, weather_df
     )
 
     # Merge wind park metadata into weather
@@ -97,18 +112,20 @@ def prepare_bid_zone_data(weather_df, windpower_df, windparks_df, bid_zone):
     # Create MultiIndex (time, windpark)
     weather_multiindex = multiindex(weather_with_meta, windparks_in_bid_zone)
 
-    # Calculate capacity factor
-    windpower_with_cf = capacity_factor(bid_zone, windpower_aligned)
-
-    return weather_multiindex, windpower_with_cf
+    return weather_multiindex, windpower_aligned
 
 
 def filter_operational_period(weather_df, windpower_df, windparks_df):
     """Filter data to only include period where all wind parks are operational"""
 
     start_time = windparks_df["prod_start_new"].max()
+    print(f"All parks operational from {start_time}")
 
-    if weather_df.index.names is not None and "time" in weather_df.index.names:
+    if weather_df.index.name is not None and "time" in weather_df.index.name:
+        # Nowcast
+        weather_index = weather_df.index.get_level_values("time")
+
+    elif weather_df.index.names is not None and "time" in weather_df.index.names:
         # Nowcast
         weather_index = weather_df.index.get_level_values("time")
     else:
@@ -223,7 +240,7 @@ def load_and_preprocess_data(
     Returns:
         Dict with training and test data, scaler parameters
     """
-    print(f"Loading data for {bid_zone}...")
+    print(f"Loading nowcast data for {bid_zone}...")
 
     # 1. Load raw data
     weather_nowcast = load_weather_nowcast(f"{data_path}/met_nowcast.parquet")
@@ -237,45 +254,16 @@ def load_and_preprocess_data(
     weather_nowcast = sin_cos_transform(
         weather_nowcast, columns=["wind_direction_10m", "hour"]
     )
-
-    # 4. Filter and align data for specific bid zone, calculate capacity factor and drop timesteps with capacity change
-    weather_multiindex, windpower_with_cf = prepare_bid_zone_data(
-        weather_nowcast, windpower, windparks, bid_zone
-    )
-
-    # 5. Filter period where all wind parks are operational
+    # 4. Filter period where all wind parks are operational
     windparks_in_bid_zone = filter_bid_zone(windparks, bid_zone)
     weather_filtered, windpower_filtered = filter_operational_period(
-        weather_multiindex, windpower_with_cf, windparks_in_bid_zone
+        weather_nowcast, windpower, windparks_in_bid_zone
     )
 
-    # Drop timestamps with mainentance events
-    full_capacity_mask = np.isclose(
-        windpower_filtered["available_capacity"],
-        float(windparks_in_bid_zone["operating_power_max"].sum()),
-        atol=0.5,
+    # 5. Filter and align data for specific bid zone, calculate capacity factor and drop timesteps with capacity change
+    weather_filtered, windpower_with_full_capacity = prepare_bid_zone_data(
+        weather_filtered, windpower_filtered, windparks, bid_zone
     )
-    windpower_with_full_capacity = windpower_filtered.loc[full_capacity_mask]
-    assert (
-        len(windpower_with_full_capacity) > 0
-    ), "No data remaining after dropping timestamps with maintance events"
-    dropped_timestamps = (~full_capacity_mask).sum()
-    print(
-        "Dropped hours due to maintenance:",
-        dropped_timestamps,
-    )
-
-    times_weather = weather_filtered.index.get_level_values("time")
-    times_power = windpower_with_full_capacity.index
-    common_times = times_weather.intersection(times_power)
-
-    weather_filtered = weather_filtered.loc[
-        weather_filtered.index.get_level_values("time").isin(common_times)
-    ]
-
-    windpower_with_full_capacity = windpower_with_full_capacity.loc[
-        windpower_with_full_capacity.index.isin(common_times)
-    ]
 
     # 6. Split into train and test sets
     feature_cols, site_meta_cols, scale_cols = get_feature_columns()
@@ -506,25 +494,16 @@ def load_and_preprocess_forecast_data(
     # ------------------------------------------------------------
     # 6. Calculate capacity factor and drop timesteps with changes
 
-    windpower_with_cf = capacity_factor(bid_zone, windpower)
+    windpower_with_cf, maintenance_hours = capacity_factor(bid_zone, windpower)
 
     # Drop timestamps with capacity change due to maintenance
-    full_capacity_mask = np.isclose(
-        windpower_with_cf["available_capacity"],
-        float(np.sum(sites_meta_unscaled, dtype=np.float64)),
-        atol=0.5,
-    )
-
-    windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
+    windpower_with_full_capacity = windpower_with_cf.loc[
+        ~windpower_with_cf.index.isin(maintenance_hours["time"])
+    ]
     assert (
         len(windpower_with_full_capacity) > 0
     ), "No data remaining after dropping timestamps with maintance events"
-    dropped_timestamps = (~full_capacity_mask).sum()
-    print("Dropped hours:", (~full_capacity_mask).sum())
-    print(
-        "Fraction of dropped hours:",
-        dropped_timestamps / len(windpower_with_cf.index),
-    )
+
     valid_times = windpower_with_full_capacity.index
     weather_forecast_full_cap = weather_forecast_transformed.loc[
         weather_forecast_transformed.index.isin(valid_times)
@@ -626,12 +605,14 @@ def load_and_preprocess_forecast_data(
 
     times = weather_req_ensembles.index.get_level_values("time").unique().sort_values()
     assert windpower.index.equals(pd.DatetimeIndex(times))
-    windparks = (
+    windparks_in_weather = (
         weather_req_ensembles.index.get_level_values("windpark").unique().sort_values()
     )
 
     T = len(times)
-    W = len(windparks)
+    W = len(
+        windparks_in_weather
+    )  # not all windparks have a weather forecast: len(windparks) != len(windparks_in_weather)
     M = len(ensemble_members)
 
     ensemble_vars = weather_feature_cols + shifted_cols
@@ -657,7 +638,7 @@ def load_and_preprocess_forecast_data(
                 mat = (
                     weather_req_ensembles[col]
                     .unstack(level="windpark")
-                    .loc[times, windparks]
+                    .loc[times, windparks_in_weather]
                     .to_numpy(dtype=np.float32)
                 )
 
@@ -669,7 +650,7 @@ def load_and_preprocess_forecast_data(
             mat = (
                 weather_req_ensembles[col]
                 .unstack(level="windpark")
-                .loc[times, windparks]
+                .loc[times, windparks_in_weather]
                 .to_numpy(dtype=np.float32)
             )
 
@@ -971,10 +952,9 @@ def load_evaluation_data(
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
 
     # 4. Filter and align data for specific bid zone, calculate capacity factor
-    weather_multiindex, windpower_with_cf = prepare_bid_zone_data(
+    weather_multiindex, windpower_with_full_capacity = prepare_bid_zone_data(
         weather_data, windpower, windparks, bid_zone
     )
-    windparks_in_bid_zone = filter_bid_zone(windparks, bid_zone)
 
     # 5. Extract features and apply scaling
 
@@ -986,34 +966,6 @@ def load_evaluation_data(
         .sort_values("windpark_id")["operating_power_max"]
         .to_numpy()
     )
-
-    # Drop timestamps with mainentance events
-    print(float(windparks_in_bid_zone["operating_power_max"].sum()))
-    full_capacity_mask = np.isclose(
-        windpower_with_cf["available_capacity"],
-        float(windparks_in_bid_zone["operating_power_max"].sum()),
-        atol=0.5,
-    )
-    print(windpower_with_cf["available_capacity"].head())
-    print(windparks_in_bid_zone["operating_power_max"])
-    windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
-    dropped_timestamps = (~full_capacity_mask).sum()
-    print(
-        "Dropped hours due to maintenance:",
-        dropped_timestamps,
-    )
-
-    times_weather = weather_multiindex.index.get_level_values("time")
-    times_power = windpower_with_full_capacity.index
-    common_times = times_weather.intersection(times_power)
-
-    weather_multiindex = weather_multiindex.loc[
-        weather_multiindex.index.get_level_values("time").isin(common_times)
-    ]
-
-    windpower_with_full_capacity = windpower_with_full_capacity.loc[
-        windpower_with_full_capacity.index.isin(common_times)
-    ]
 
     # 6. Validate data quality (no NaNs)
     check_evaluation_data_quality(
@@ -1029,7 +981,7 @@ def load_evaluation_data(
 
     # 7. Convert to arrays
     X_eval = get_input_shaped(weather_scaled, feature_cols)
-    Y_eval = convert_targets_to_arrays(windpower_with_cf, prefix="Y_eval_")
+    Y_eval = convert_targets_to_arrays(windpower_with_full_capacity, prefix="Y_eval_")
     timestamps = weather_scaled.index.get_level_values("time").unique()
 
     print(
@@ -1046,7 +998,6 @@ def load_evaluation_data(
     }
 
 
-# TODO
 def load_evaluation_forecast_data(
     dates,
     scaler_params,
@@ -1223,17 +1174,12 @@ def load_evaluation_forecast_data(
 
             # ------------------------------------------------------------
             # Calculate capacity factor
-            windpower_with_cf = capacity_factor(bid_zone, windpower)
+            windpower_with_cf, maintenance_hours = capacity_factor(bid_zone, windpower)
 
             # Drop timestamps with capacity change due to maintenance
-            full_capacity_mask = np.isclose(
-                windpower_with_cf["available_capacity"],
-                float(np.sum(sites_meta_unscaled, dtype=np.float64)),
-                atol=0.5,
-            )
-            windpower_with_full_capacity = windpower_with_cf.loc[full_capacity_mask]
-            dropped_timestamps += (~full_capacity_mask).sum()
-            print("Dropped hours:", (~full_capacity_mask).sum())
+            windpower_with_full_capacity = windpower_with_cf.loc[
+                ~windpower_with_cf.index.isin(maintenance_hours["time"])
+            ]
             valid_times = windpower_with_full_capacity.index
             weather_forecast_transformed = weather_forecast_transformed.loc[
                 weather_forecast_transformed.index.get_level_values("time").isin(
