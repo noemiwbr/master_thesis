@@ -21,9 +21,10 @@ def plot_qr_hdi_prediction(
 ):
     fig, axes = plt.subplots(
         nrows=2,
-        figsize=(10, 8),
+        figsize=(15, 4),
         sharex=True,
         constrained_layout=True,
+        gridspec_kw={"height_ratios": [3, 1]},
     )
 
     # Top plot

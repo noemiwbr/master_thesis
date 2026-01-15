@@ -5,6 +5,7 @@ sys.path.append("../src")
 from models.model import (
     WindPowerQuantile,
     WindPowerQuantileEnsembles,
+    WindPowerModel_simple,
     model_mw_gamma,
     model_cf_beta,
 )
@@ -14,6 +15,7 @@ import numpy as np
 TORCH_MODELS = {
     "WindPowerQuantile": WindPowerQuantile,
     "WindPowerQuantileEnsembles": WindPowerQuantileEnsembles,
+    "WindPowerModel_simple": WindPowerModel_simple,
 }
 
 NUMPYRO_MODELS = {
@@ -46,7 +48,12 @@ def build_torch_model(model_cfg, data):
     if model_cfg.name in {
         "WindPowerQuantile",
         "WindPowerQuantileEnsembles",
+        "WindPowerModel_simple",
     }:
+        if model_cfg.name == "WindPowerModel_simple":
+            return model_cls(
+                num_features=X.shape[-1],
+            )
         if model_cfg.params.quantiles is None:
             quantiles = np.linspace(0, 1, 51)
         else:

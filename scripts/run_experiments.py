@@ -74,6 +74,10 @@ def run_single_experiment(exp_path: str) -> dict:
     model_cfg = load_config(exp_path)
     data_cfg = load_config(model_cfg.data.path)
 
+    assert (
+        data_cfg.bid_zone == model_cfg.data.bid_zone
+    ), f"Bid zones have to align in model and data cfg, got {data_cfg.bid_zone} and {model_cfg.data.bid_zone}"
+
     experiment_name = model_cfg.experiment_name
     print(f"\nRunning experiment: {experiment_name}")
 

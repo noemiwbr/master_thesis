@@ -24,7 +24,7 @@ class WindPowerModel_simple(nn.Module):
         y_site = self.shared_mlp(x).squeeze(-1)  # [timesteps, num_sites, 1]
         y_sum = y_site.sum(dim=1)  # [timesteps]
 
-        return y_site, y_sum
+        return y_sum
 
 
 class WindPowerModel(nn.Module):
@@ -98,8 +98,8 @@ class WindPowerQuantile(nn.Module):
         """
         x: [timesteps, num_sites, num_features]
         """
-        y_site_q = self.shared_mlp(x)  # [T, S, Q]
-        y_sum_q = y_site_q.sum(dim=1)  # [T, Q]
+        y_site_q = self.shared_mlp(x)  # [T, S, 8]
+        y_sum_q = y_site_q.sum(dim=1)  # [T, 8]
 
         # Median
         m = self.median_head(y_sum_q)

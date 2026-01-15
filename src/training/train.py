@@ -12,77 +12,120 @@ from data_processing.preprocess import (
     to_tensor,
 )
 
+from torch.utils.data import Dataset
+import torch
+import torch.optim as optim
+from functools import partial
+
+
+class WindDataset(Dataset):
+    def __init__(self, X, Y):
+        # X: [T, S, F] or [T, S, E, F]
+        # Y: [T]
+        self.X = X
+        self.Y = Y
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
+
+
+from torch.utils.data import DataLoader
+
+
+def make_loader(X, Y, batch_size=512, shuffle=True, num_workers=0):
+    ds = WindDataset(X, Y)
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=True,
+        num_workers=num_workers,
+    )
+
 
 def train_loop(
     model,
     optimizer,
     criterion,
-    X,
-    Y,
+    loader,
     num_steps,
     log_every=250,
 ):
+    model.train()
     losses = []
+    step = 0
 
-    for step in range(num_steps):
-        model.train()
-        optimizer.zero_grad()
+    while step < num_steps:
+        for xb, yb in loader:
+            if step >= num_steps:
+                break
 
-        y_pred = model(X)
-        loss = criterion(y_pred, Y)
-        losses.append(loss.item())
+            optimizer.zero_grad(set_to_none=True)
 
-        loss.backward()
-        optimizer.step()
+            preds = model(xb)
+            loss = criterion(preds, yb)
 
-        if step % log_every == 0:
-            print(f"Step {step:3d} | Loss: {loss.item():.4f}")
+            loss.backward()
+            optimizer.step()
+
+            losses.append(loss.item())
+
+            if step % log_every == 0:
+                print(f"Step {step:6d} | Loss: {loss.item():.4f}")
+
+            step += 1
 
     return losses
 
 
 def train_torch(model, data, quantiles, model_cfg, data_cfg):
+
     data = to_tensor(data, data_cfg)
     X = data["X_train"]
     Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
-    # Handle forecast vs nowcast
-    if model_cfg.name == "WindPowerQuantile" and X.ndim == 4:
-        X = X[:, :, 0]  # first ensemble member
+    # Handle forecast vs nowcast (take member 0)
+    if (
+        model_cfg.name == "WindPowerQuantile"
+        or model_cfg.name == "WindPowerModel_simple"
+    ) and X.ndim == 4:
+        X = X[:, :, 0]  # [T, S, F]
 
     if model_cfg.name == "WindPowerQuantileEnsembles" and X.ndim != 4:
         raise ValueError(
-            "WindPowerQuantileEnsembles requires ensemble input with shape "
-            "[T, S, E, F], but got X.ndim = "
-            f"{X.ndim} and shape {tuple(X.shape)}"
+            "WindPowerQuantileEnsembles requires [T, S, E, F], "
+            f"but got shape {tuple(X.shape)}"
         )
 
-    # Optimizer
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=model_cfg.training.lr,
-    )
+    optimizer = optim.Adam(model.parameters(), lr=model_cfg.training.lr)
 
-    # Loss
     LOSS = {
         "quantile_loss_weighted": quantile_loss_weighted,
         "quantile_loss": quantile_loss,
+        "mse": torch.nn.MSELoss(),
     }
-    criterion = lambda preds, target: LOSS[model_cfg.training.loss](
-        preds, target, quantiles=quantiles
-    )
 
-    # Training
+    loss_fn = LOSS[model_cfg.training.loss]
+    if model_cfg.name != "WindPowerModel_simple":
+        loss_fn = partial(loss_fn, quantiles=quantiles)
+
+    criterion = lambda preds, target: loss_fn(preds, target)
+
+    # DataLoader
+    batch_size = getattr(model_cfg.training, "batch_size", 64)
+    loader = make_loader(X, Y, batch_size=batch_size, shuffle=True)
+
     losses = train_loop(
         model=model,
         optimizer=optimizer,
         criterion=criterion,
-        X=X,
-        Y=Y,
+        loader=loader,
         num_steps=model_cfg.training.num_steps,
     )
 
-    # Save checkpoint
     save_torch_checkpoint(
         model=model,
         model_cfg=model_cfg,

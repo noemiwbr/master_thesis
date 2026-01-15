@@ -143,19 +143,15 @@ import torch
 
 def to_tensor(data, cfg):
     tensor_data = {}
+    keep = {"feature_cols", "scaler_params", "site_scaler_params"}
 
     for key, value in data.items():
-        if key in ["feature_cols", "scaler_params", "site_scaler_params"]:
+        if key in keep:
             tensor_data[key] = value
-            continue
-
-        if value is None:
+        elif value is None:
             tensor_data[key] = None
-            continue
         else:
-            tensor_data[key] = torch.tensor(
-                value,
-                dtype=torch.float32,
-            )
+            t = torch.as_tensor(value, dtype=torch.float32)
+            tensor_data[key] = t
 
     return tensor_data

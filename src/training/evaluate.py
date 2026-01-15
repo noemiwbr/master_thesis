@@ -69,12 +69,16 @@ def evaluate_model(model, data, quantiles, model_cfg, data_cfg):
     y_pred = predict(model, data, model_cfg, split="test")
 
     metrics = {}
-
-    metrics["rmse_median"] = rmse_on_quantile(y_true, y_pred, quantiles, q=0.5)
-    metrics["coverage_025_975"] = coverage(y_true, y_pred, quantiles=quantiles)
-    metrics["coverage_0_50"] = coverage(
-        y_true, y_pred, quantiles=quantiles, lower=0, upper=0.5
-    )
+    if model_cfg.name == "WindPowerModel_simple":  # no quantiles
+        metrics["rmse_median"] = rmse(y_true, y_pred)
+        metrics["coverage_025_975"] = 0
+        metrics["coverage_0_50"] = 0
+    else:
+        metrics["rmse_median"] = rmse_on_quantile(y_true, y_pred, quantiles, q=0.5)
+        metrics["coverage_025_975"] = coverage(y_true, y_pred, quantiles=quantiles)
+        metrics["coverage_0_50"] = coverage(
+            y_true, y_pred, quantiles=quantiles, lower=0, upper=0.5
+        )
 
     return metrics, y_pred
 
@@ -111,6 +115,9 @@ def evaluate_numpyro(model, samples, rng_key_predict, data, model_cfg):
 
 
 def test_BNN(file_name, eval_data):
+
+    if len(eval_data["X_eval"].shape) == 4:
+        eval_data["X_eval"] = eval_data["X_eval"][:, :, 0]
 
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
@@ -152,7 +159,7 @@ def test_BNN(file_name, eval_data):
         )
 
         preds = predictive["Y"]
-        if "cf" in checkpoint["model_name"]:
+        if "cf" in checkpoint["model_cfg"].name:
             preds *= eval_data["Y_eval_aval"]
 
         median = np.percentile(preds, 50, axis=0)
@@ -173,15 +180,19 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
 
-    if not ensembles:
-        X_eval = eval_data["X_eval"][:, :, 0]
-    else:
-        X_eval = eval_data["X_eval"]
+    assert (
+        from_now_to_forecast and len(eval_data["X_eval"].shape) == 4
+    ), "forecast has to have 4 dimensions"
 
     if from_now_to_forecast:
         feature_cols = eval_data["feature_cols"]
         idx = [i for i, c in enumerate(feature_cols) if c != "avg_ensemble_var"]
         X_eval = eval_data["X_eval"][:, :, 0, idx]
+
+    if len(eval_data["X_eval"].shape) == 4 and not ensembles:
+        X_eval = eval_data["X_eval"][:, :, 0]
+    else:
+        X_eval = eval_data["X_eval"]
 
     forecast = pd.DataFrame(
         index=eval_data["index"],
@@ -198,6 +209,10 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
     ]
 
     for i, bz in enumerate(bid_zones):
+        # extract bid zone
+        # TODO only for one bid zone so far
+        if i != (int(file_name.split("NO")[-1]) - 1):
+            continue
 
         loaded_model, checkpoint_data = load_torch_model(file_name=file_name)
 
@@ -233,13 +248,12 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
                 )
 
             else:  # TODO catch more models here
-                _, y_sum_pred = loaded_model(torch.tensor(X_eval))
-                y_sum_pred = y_sum_pred.numpy() * eval_data["Y_eval_aval"]  # CF
+                y_sum_pred = loaded_model(
+                    torch.tensor(X_eval)
+                ).numpy()  # TODO * eval_data["Y_eval_aval"]  # CF
                 medians = y_sum_pred  # np.percentile(y_sum_pred, 50, axis=0)
                 forecast_extended[i]["median"] = medians
 
         forecast[bz] = medians
-
-        break  # TODO no checkpoints for other bid zones so far
 
     return forecast, forecast_extended
