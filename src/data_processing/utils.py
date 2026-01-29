@@ -240,10 +240,20 @@ def run_inference_bnn(model, args, rng_key, X, Y):
         chain_method="parallel",
         progress_bar=True,
     )
-    mcmc.run(rng_key, X=X, Y=Y)
+    mcmc.run(
+        rng_key,
+        X=X,
+        Y=Y,
+        extra_fields=("accept_prob", "num_steps", "diverging"),
+    )
     mcmc.print_summary()
+    extras = mcmc.get_extra_fields()
+    print("Avg. accept prob:", extras["accept_prob"].mean())
+    print("Total divergences:", extras["diverging"].sum())
+    print("Avg. NUTS steps:", extras["num_steps"].mean())
     print("\nMCMC elapsed time:", time.time() - start)
-    return mcmc.get_samples()
+    samples = mcmc.get_samples()
+    return samples
 
 
 # Posterior predictive for basic BNN
