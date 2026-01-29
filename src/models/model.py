@@ -201,7 +201,7 @@ class WindPowerQuantileEnsembles(nn.Module):
         return y_q
 
 
-def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
+def model_mw_gamma(X, Y=None, nonlin=jax.nn.relu, eps=1e-6):  # jax.nn.relu, jnp.tanh
     N, S, F = X.shape
 
     w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F, 16]).to_event(2))
@@ -222,14 +222,18 @@ def model_mw_gamma(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     mu = numpyro.deterministic(
         "mu",
         jax.nn.softplus(
-            (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1).sum(axis=1)
+            (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu)
+            .squeeze(-1)
+            .mean(axis=1)  # TODO: mean or sum, softplus before mean?
         )
         + eps,
     )
     alpha = numpyro.deterministic(
         "alpha",
         jax.nn.softplus(
-            (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1).sum(axis=1)
+            (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k)
+            .squeeze(-1)
+            .mean(axis=1)  # TODO: mean or sum, softplus before mean?
         )
         + 1e-3,
     )
@@ -258,8 +262,12 @@ def model_cf_beta(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     # forward
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
-    m_logit = (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
-    k_raw = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1).sum(axis=1)
+    m_logit = (
+        (jnp.einsum("nsg,gd->nsd", z2, w3m) + b3m).squeeze(-1).sum(axis=1)
+    )  # TODO mean or sum?
+    k_raw = (
+        (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1).sum(axis=1)
+    )  # TODO mean or sum?
 
     m = numpyro.deterministic(
         "mu", jax.nn.sigmoid(m_logit)
