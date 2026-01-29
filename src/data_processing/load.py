@@ -438,7 +438,7 @@ def load_and_preprocess_forecast_data(
         f"{col}_member_{i}"
         for col in weather_feature_cols
         for i in range(15)
-        if not col.startswith("wind_direction")
+        if not col.startswith("wind_direction")  # already sin/cos applied
     ]
 
     global_cols = [
@@ -530,7 +530,6 @@ def load_and_preprocess_forecast_data(
     weather_scaled[scale_cols] = (
         weather_forecast_full_cap[scale_cols] - mean_train
     ) / std_train
-
     print(weather_scaled[scale_cols].describe().loc[["mean", "std"]])
 
     # Handle shifted columns, use same scaler as base column to avoid distribution shift
@@ -1310,7 +1309,7 @@ def load_evaluation_forecast_data(
                     raise KeyError("feature neither in ensemble_vars nor global_vars")
 
             # Convert targets
-            Y_eval = convert_targets_to_arrays(windpower_with_cf, "Y_eval_")
+            Y_eval = convert_targets_to_arrays(windpower_with_full_capacity, "Y_eval_")
             X_eval_list.append(X)
             Y_eval_list.append(Y_eval)
 
@@ -1325,6 +1324,7 @@ def load_evaluation_forecast_data(
             Y_acc[k].append(v)
 
     Y_eval = {k: np.concatenate(v) for k, v in Y_acc.items()}
+    assert X_eval.shape[0] == Y_eval["Y_eval_gen"].shape[0]
     print(f"Preprocessing done. X_eval shape: {X_eval.shape}")
     print(f"Dropped timestamps due to maintenance: {dropped_timestamps}")
 
