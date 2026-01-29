@@ -86,13 +86,28 @@ def evaluate_model(model, data, quantiles, model_cfg, data_cfg):
 def evaluate_numpyro(model, samples, rng_key_predict, data, model_cfg):
 
     X_test = data["X_test"]
+    X_train = data["X_train"]
     Y = data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
 
     # Handle forecast vs nowcast
     if model_cfg.name in ["model_mw_gamma", "model_cf_beta"] and X_test.ndim == 4:
         X_test = X_test[:, :, 0]  # first ensemble member
+        X_train = X_train[:, :, 0]
 
     predictive = Predictive(model, samples)(rng_key_predict, X_test)
+
+    # Print the RMSE on the training data - sanity check that the model learns something
+    Y_train = (
+        data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
+    )
+    predictive_train = Predictive(model, samples)(rng_key_predict, X_train)
+    y_pred_train = (
+        predictive_train["Y"]
+        if model_cfg.params.target == "gen"
+        else predictive_train["Y"] * data["Y_train_aval"]
+    )
+    y_pred_median_train = np.percentile(y_pred_train, 50, axis=0)
+    print("RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
 
     # Handle CF prediction, transform it back to generation prediction
     y_pred = (
