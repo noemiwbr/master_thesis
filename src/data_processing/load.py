@@ -1030,8 +1030,9 @@ def load_evaluation_forecast_data(
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
     windparks = filter_bid_zone(windparks, bid_zone)
     windpark_names = windparks["substation_name"].to_list()
-    X_eval_list = []
-    Y_eval_list = []
+    weather = []
+    power = []
+
     sites_meta = None
     timestamps = []
     dropped_timestamps = 0
@@ -1090,13 +1091,14 @@ def load_evaluation_forecast_data(
 
             # Merge wind park metadata into weather
             weather_forecast = merge_metadata(weather_forecast, windparks)
+
             sites_meta_unscaled = (
                 weather_forecast[site_meta_cols]
                 .drop_duplicates()
                 .dropna()
                 .sort_values("windpark_id")["operating_power_max"]
                 .to_numpy()
-            )
+            )  # independent of date, no need to safe in a list
 
             # Load and combine two windpower files (shifted by 11 hours)
             windpower1 = load_windpower(path_to_windpower1)
@@ -1170,160 +1172,155 @@ def load_evaluation_forecast_data(
             weather_forecast_transformed = multiindex(
                 weather_forecast_transformed, windparks
             )
-
-            # ------------------------------------------------------------
-            # Calculate capacity factor
-            windpower_with_cf, maintenance_hours = capacity_factor(bid_zone, windpower)
-
-            # Drop timestamps with capacity change due to maintenance
-            windpower_with_full_capacity = windpower_with_cf.loc[
-                ~windpower_with_cf.index.isin(maintenance_hours["time"])
-            ]
-            valid_times = windpower_with_full_capacity.index
-            weather_forecast_transformed = weather_forecast_transformed.loc[
-                weather_forecast_transformed.index.get_level_values("time").isin(
-                    valid_times
-                )
-            ]
-
-            # ------------------------------------------------------------
-            # Apply scaler parameters
-            sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
-
-            weather_scaled = weather_forecast_transformed.copy()
-            weather_scaled.loc[:, scale_cols] = (
-                weather_forecast_transformed.loc[:, scale_cols]
-                .sub(scaler_mean, axis=1)
-                .div(scaler_std, axis=1)
-            )
-
-            # Handle shifted columns, use same scaler as base column to avoid distribution shift
-            scale_shifted = [
-                f"{col}_member_{i}"
-                for col in ["wind_speed_10m+1", "wind_speed_10m-1"]
-                for i in range(15)
-            ]
-            shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
-            for col in scale_shifted:
-                m = shifted_pattern.match(col)
-                i = m.group(1)
-                base_col = f"wind_speed_10m_member_{i}"
-
-                if base_col not in scale_cols:
-                    raise KeyError(
-                        f"{base_col} not found in fitted scaler columns (scale_cols)."
-                    )
-                mu = scaler_mean[base_col]
-                sigma = scaler_std[base_col]
-
-                weather_scaled[col] = (weather_scaled[col] - mu) / sigma
-
-            # ------------------------------------------------------------
-            # Calculate variance across ensemble members
-            if variance_feature:
-
-                def split_col(col):
-                    match = re.match(r"(.+)_member_(\d+)$", col)
-                    if match:
-                        return match.group(1), int(match.group(2))
-                    return None, None
-
-                groups = defaultdict(list)
-
-                for col in weather_scaled.columns:
-                    # exclude shifted cols
-                    if shifted_pattern.match(col):
-                        continue
-                    var, member = split_col(col)
-                    if var is not None:
-                        groups[var].append(col)
-
-                ensemble_var = {
-                    var: weather_scaled[cols].var(axis=1)
-                    for var, cols in groups.items()
-                }
-                # TODO could also get the variance per features
-                # Calculates ensemble-variance per features and averages afterwards
-
-                weather_scaled["avg_ensemble_var"] = (
-                    pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
-                )
-
-            # ------------------------------------------------------------
-            # Shape data into [timesteps, windparks, ensemble memebers, features]
-
-            times = weather_scaled.index.get_level_values("time").unique().sort_values()
-            timestamps += times.to_list()
-
-            assert (
-                windpower_with_full_capacity.index.unique().sort_values().equals(times)
-            )
-            windparks_from_weather = (
-                weather_scaled.index.get_level_values("windpark").unique().sort_values()
-            )
-            # assert len(windparks) == len(
-            #     windparks_from_weather
-            # ), "Not all windparks present in weather"
-
-            T = len(times)
-            W = len(windparks_from_weather)
-            M = len(ensemble_members)
-
-            ensemble_cols = weather_feature_cols + shifted_cols
-            feature_cols = ensemble_cols + global_cols
-            feature_cols.sort()
-
-            F_ens = len(ensemble_cols)
-            F_glob = len(global_cols)
-            F = F_ens + F_glob
-
-            assert len(feature_cols) == len(
-                set(feature_cols)
-            ), "Duplicate feature names in feature_cols"
-
-            # Select ensemble related features for the requested ensemble members
-            X = np.zeros((T, W, M, F), dtype=np.float32)
-
-            for f_idx, var in enumerate(feature_cols):
-                if var in ensemble_cols:
-                    for m_idx, member in enumerate(ensemble_members):
-                        col = f"{var}_member_{member}"
-                        mat = (
-                            weather_scaled[col]
-                            .unstack(level="windpark")
-                            .loc[times, windparks_from_weather]
-                            .to_numpy(dtype=np.float32)
-                        )
-
-                        X[:, :, m_idx, f_idx] = mat
-                elif var in global_cols:
-                    col = var
-                    mat = (
-                        weather_scaled[col]
-                        .unstack(level="windpark")
-                        .loc[times, windparks_from_weather]
-                        .to_numpy(dtype=np.float32)
-                    )
-                    X[:, :, :, f_idx] = mat[:, :, None]
-                else:
-                    raise KeyError("feature neither in ensemble_vars nor global_vars")
-
-            # Convert targets
-            Y_eval = convert_targets_to_arrays(windpower_with_full_capacity, "Y_eval_")
-            X_eval_list.append(X)
-            Y_eval_list.append(Y_eval)
+            # print("weather single date: ", weather_forecast_transformed.head())
+            # print("windpower single date: ", windpower.head())
 
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
 
-    X_eval = np.concatenate(X_eval_list, axis=0)
-    Y_acc = defaultdict(list)
+        weather.append(weather_forecast_transformed)
+        power.append(windpower)
 
-    for Y in Y_eval_list:
-        for k, v in Y.items():
-            Y_acc[k].append(v)
+    weather_df = pd.concat(weather)
+    power_df = pd.concat(power)
 
-    Y_eval = {k: np.concatenate(v) for k, v in Y_acc.items()}
+    # ------------------------------------------------------------
+    # Calculate capacity factor
+    windpower_with_cf, maintenance_hours = capacity_factor(bid_zone, power_df)
+
+    # Drop timestamps with capacity change due to maintenance
+    windpower_with_full_capacity = windpower_with_cf.loc[
+        ~windpower_with_cf.index.isin(maintenance_hours["time"])
+    ]
+    valid_times = windpower_with_full_capacity.index
+    weather_forecast_transformed = weather_df.loc[
+        weather_df.index.get_level_values("time").isin(valid_times)
+    ]
+
+    # ------------------------------------------------------------
+    # Apply scaler parameters
+    sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
+
+    weather_scaled = weather_forecast_transformed.copy()
+    weather_scaled.loc[:, scale_cols] = (
+        weather_forecast_transformed.loc[:, scale_cols]
+        .sub(scaler_mean, axis=1)
+        .div(scaler_std, axis=1)
+    )
+
+    # Handle shifted columns, use same scaler as base column to avoid distribution shift
+    scale_shifted = [
+        f"{col}_member_{i}"
+        for col in ["wind_speed_10m+1", "wind_speed_10m-1"]
+        for i in range(15)
+    ]
+    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
+    for col in scale_shifted:
+        m = shifted_pattern.match(col)
+        i = m.group(1)
+        base_col = f"wind_speed_10m_member_{i}"
+
+        if base_col not in scale_cols:
+            raise KeyError(
+                f"{base_col} not found in fitted scaler columns (scale_cols)."
+            )
+        mu = scaler_mean[base_col]
+        sigma = scaler_std[base_col]
+
+        weather_scaled[col] = (weather_scaled[col] - mu) / sigma
+
+    # ------------------------------------------------------------
+    # Calculate variance across ensemble members
+    if variance_feature:
+
+        def split_col(col):
+            match = re.match(r"(.+)_member_(\d+)$", col)
+            if match:
+                return match.group(1), int(match.group(2))
+            return None, None
+
+        groups = defaultdict(list)
+
+        for col in weather_scaled.columns:
+            # exclude shifted cols
+            if shifted_pattern.match(col):
+                continue
+            var, member = split_col(col)
+            if var is not None:
+                groups[var].append(col)
+
+        ensemble_var = {
+            var: weather_scaled[cols].var(axis=1) for var, cols in groups.items()
+        }
+        # TODO could also get the variance per features
+        # Calculates ensemble-variance per features and averages afterwards
+
+        weather_scaled["avg_ensemble_var"] = (
+            pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
+        )
+
+    # ------------------------------------------------------------
+    # Shape data into [timesteps, windparks, ensemble members, features]
+
+    times = weather_scaled.index.get_level_values("time").unique().sort_values()
+    timestamps += times.to_list()
+
+    assert windpower_with_full_capacity.index.unique().sort_values().equals(times)
+    windparks_from_weather = (
+        weather_scaled.index.get_level_values("windpark").unique().sort_values()
+    )
+    # assert len(windparks) == len(
+    #     windparks_from_weather
+    # ), "Not all windparks present in weather"
+
+    T = len(times)
+    W = len(windparks_from_weather)
+    M = len(ensemble_members)
+
+    ensemble_cols = weather_feature_cols + shifted_cols
+    feature_cols = ensemble_cols + global_cols
+    feature_cols.sort()
+
+    F_ens = len(ensemble_cols)
+    F_glob = len(global_cols)
+    F = F_ens + F_glob
+
+    assert len(feature_cols) == len(
+        set(feature_cols)
+    ), "Duplicate feature names in feature_cols"
+
+    # Select ensemble related features for the requested ensemble members
+    X = np.zeros((T, W, M, F), dtype=np.float32)
+
+    for f_idx, var in enumerate(feature_cols):
+        if var in ensemble_cols:
+            for m_idx, member in enumerate(ensemble_members):
+                col = f"{var}_member_{member}"
+                mat = (
+                    weather_scaled[col]
+                    .unstack(level="windpark")
+                    .loc[times, windparks_from_weather]
+                    .to_numpy(dtype=np.float32)
+                )
+
+                X[:, :, m_idx, f_idx] = mat
+        elif var in global_cols:
+            col = var
+            mat = (
+                weather_scaled[col]
+                .unstack(level="windpark")
+                .loc[times, windparks_from_weather]
+                .to_numpy(dtype=np.float32)
+            )
+            X[:, :, :, f_idx] = mat[:, :, None]
+        else:
+            raise KeyError("feature neither in ensemble_vars nor global_vars")
+
+    # Convert targets
+    Y_eval = convert_targets_to_arrays(windpower_with_full_capacity, "Y_eval_")
+    X_eval = X
+
+    # Y_eval = {k: np.concatenate(v) for k, v in Y_acc.items()}
     assert X_eval.shape[0] == Y_eval["Y_eval_gen"].shape[0]
     print(f"Preprocessing done. X_eval shape: {X_eval.shape}")
     print(f"Dropped timestamps due to maintenance: {dropped_timestamps}")
