@@ -4,27 +4,29 @@ import traceback
 from pathlib import Path
 import torch
 import jax
-
+from numpyro.infer.autoguide import AutoDiagonalNormal
 import sys
 
 sys.path.append("../src")
 from configs.load_config import load_config
 from data_processing.load import load_dataset
 from models.build import build_model
-from training.train import train_torch, sample_numpyro
+from training.train import train_torch, sample_numpyro, run_svi
 from training.evaluate import evaluate_model, evaluate_numpyro
-
+from jax import random
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 EXPERIMENTS = [
-    # "../configs/model/bnn_cf_model.yaml",
-    # "../configs/model/bnn_gen_model.yaml",
-    # "../configs/model/torch_model_ensemble.yaml",
-    "../configs/model/bnn_gen_model_forecast.yaml",
-    # "../configs/model/bnn_gen_model_nowcast.yaml",
+    # "../configs/model/torch_model_quantile.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_01.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_02.yaml",
+    "../configs/model/bnn_gen_model_nowcast_03.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_04.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
 ]
 
 RESULTS_DIR = Path("results")
@@ -34,6 +36,7 @@ SUMMARY_FIELDS = [
     "experiment",
     "status",
     "rmse_median",
+    "crps",
     "coverage_025_975",
     "coverage_0_50",
     "runtime_sec",
@@ -113,22 +116,54 @@ def run_single_experiment(exp_path: str) -> dict:
         )
 
     elif model_cfg.backend == "numpyro":
-        samples, _, rng_key_predict = sample_numpyro(model, data, model_cfg, data_cfg)
+        rng_key, rng_key_pred = random.split(random.PRNGKey(0))
+        if model_cfg.sampler == "vi":
+            # ---- optimize ----
+            rng_key, rng_key_svi = random.split(rng_key)
+            guide = AutoDiagonalNormal(model)  # TODO: better guide?
+            svi_result = run_svi(
+                model,
+                data["X_train"],
+                data["Y_train_gen"],
+                rng_key_svi,
+                guide,
+            )
 
-        runtime = time.time() - start_time
-        metrics, _, _, _, _, _ = evaluate_numpyro(
-            model, samples, rng_key_predict, data, model_cfg
-        )
+            runtime = time.time() - start_time
+
+            # ---- evaluation ----
+            metrics, _, _, _, _, _ = evaluate_numpyro(
+                model=model,
+                rng_key_predict=rng_key_pred,
+                data=data,
+                model_cfg=model_cfg,
+                svi_params=svi_result.params,
+            )
+
+        elif model_cfg.sampler == "mcmc":
+            # ---- sample ----
+            samples, _, _ = sample_numpyro(model, data, model_cfg, data_cfg, rng_key)
+            runtime = time.time() - start_time
+
+            # ---- evaluation ----
+            metrics, _, _, _, _, _ = evaluate_numpyro(
+                model=model,
+                rng_key_predict=rng_key_pred,
+                data=data,
+                model_cfg=model_cfg,
+                samples=samples,
+            )
 
     # ---- result row ----
     result = {
         "experiment": experiment_name,
         "status": "success",
         "rmse_median": float(metrics["rmse_median"]),
+        "crps": float(metrics["crps"]),
         "coverage_025_975": float(metrics["coverage_025_975"]),
         "coverage_0_50": float(metrics["coverage_0_50"]),
         "runtime_sec": round(runtime, 2),
-        "loss": losses if model_cfg.backend == "torch" else None,
+        "loss": losses[-1] if model_cfg.backend == "torch" else None,
         "error": "",
     }
 
@@ -136,7 +171,7 @@ def run_single_experiment(exp_path: str) -> dict:
 
 
 # ============================================================================
-# MAIN LOOP (ROBUST)
+# MAIN LOOP
 # ============================================================================
 
 
@@ -153,6 +188,7 @@ def main():
 
             print("Finished successfully")
             print(f"  RMSE (median): {result['rmse_median']:.3f}")
+            print(f"  CRPS: {result['crps']:.3f}")
             print(f"  Coverage 2.5–97.5%: {result['coverage_025_975']:.3f}")
             print(f"  Coverage 0–50%: {result['coverage_0_50']:.3f}")
             print(f"  Runtime: {result['runtime_sec']} s")
@@ -165,6 +201,7 @@ def main():
                 "experiment": Path(exp_path).stem,
                 "status": "failed",
                 "rmse_median": "",
+                "crps": "",
                 "coverage_025_975": "",
                 "coverage_0_50": "",
                 "runtime_sec": "",
