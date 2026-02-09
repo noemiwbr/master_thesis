@@ -16,6 +16,8 @@ from torch.utils.data import Dataset
 import torch
 import torch.optim as optim
 from functools import partial
+from numpyro.infer import SVI, Trace_ELBO
+from numpyro.optim import Adam
 
 
 class WindDataset(Dataset):
@@ -138,13 +140,16 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
     return model, losses
 
 
-def sample_numpyro(model, data, model_cfg, data_cfg):
+def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
 
     X = data["X_train"]
     Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
     # Handle forecast vs nowcast
-    if model_cfg.name in ["model_mw_gamma", "model_cf_beta"] and X.ndim == 4:
+    if (
+        model_cfg.name in ["model_mw_gamma", "model_cf_beta", "model_mw_gamma_extended"]
+        and X.ndim == 4
+    ):
         X = X[:, :, 0]  # first ensemble member
         print("use first ensemble member")
 
@@ -154,9 +159,11 @@ def sample_numpyro(model, data, model_cfg, data_cfg):
         "num_chains": model_cfg.args.num_chains,
     }
 
-    rng_key, rng_key_predict = random.split(random.PRNGKey(0))
-
     samples = run_inference_bnn(model, args, rng_key, X, Y)
+
+    rng_key, rng_key_predict = random.split(
+        rng_key
+    )  # TODO: remove rng_key_pred from checkpoint
 
     save_checkpoint(
         samples,
@@ -167,3 +174,24 @@ def sample_numpyro(model, data, model_cfg, data_cfg):
     )
 
     return samples, rng_key, rng_key_predict
+
+
+def run_svi(
+    model,
+    X_train,
+    Y_train,
+    rng_key_svi,
+    guide,
+    optimizer=Adam,
+    lr=1e-3,
+    num_steps=1000,
+):
+    optimizer = optimizer(lr)
+    svi = SVI(
+        model, guide, optimizer, loss=Trace_ELBO(num_particles=10)
+    )  # num_particles=8
+
+    svi_result = svi.run(rng_key_svi, num_steps, X_train, Y_train, progress_bar=False)
+    print(f"Final ELBO loss: {svi_result.losses[-1]:.3f}")
+
+    return svi_result

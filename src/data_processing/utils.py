@@ -263,19 +263,6 @@ def predict_bnn(model, rng_key, samples, X):
     return trace["Y"]["value"]
 
 
-def run_svi(
-    model, guide, rng_key, X_train, Y_train, optimizer=Adam, lr=1e-3, num_steps=5000
-):
-    optimizer = optimizer(lr)
-    svi = SVI(model, guide, optimizer, loss=Trace_ELBO(num_particles=8))
-
-    svi_result = svi.run(rng_key, num_steps, X_train, Y_train, progress_bar=False)
-
-    losses = svi_result.losses
-    print(f"Final ELBO loss: {losses[-1]:.3f}")
-    return svi_result
-
-
 class QuantileDistribution:
     """
     A utility class that converts model-predicted quantiles q(tau)
