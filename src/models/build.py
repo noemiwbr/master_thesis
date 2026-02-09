@@ -8,6 +8,7 @@ from models.model import (
     WindPowerModel_simple,
     model_mw_gamma,
     model_cf_beta,
+    model_mw_gamma_extended,
 )
 import numpy as np
 
@@ -21,6 +22,7 @@ TORCH_MODELS = {
 NUMPYRO_MODELS = {
     "model_mw_gamma": model_mw_gamma,
     "model_cf_beta": model_cf_beta,
+    "model_mw_gamma_extended": model_mw_gamma_extended,
 }
 
 

@@ -221,7 +221,7 @@ def model_mw_gamma(X, Y=None, nonlin=jax.nn.relu, eps=1e-6):  # jax.nn.relu, jnp
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
     mu = numpyro.deterministic(
         "mu",
-        jax.nn.softplus(
+        jax.nn.softplus(  # jax.nn.softplus, jnp.exp
             (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu)
             .squeeze(-1)
             .mean(axis=1)  # TODO: mean or sum, softplus before mean?
@@ -237,6 +237,108 @@ def model_mw_gamma(X, Y=None, nonlin=jax.nn.relu, eps=1e-6):  # jax.nn.relu, jnp
         )
         + 1e-3,
     )
+    rate = alpha / mu
+
+    # Likelihood: Y ~ Gamma(k, k/mu)
+    with numpyro.plate("data", N):
+        numpyro.sample("Y", dist.Gamma(concentration=alpha, rate=rate), obs=Y)
+
+
+def model_mw_gamma_emb(
+    X, Y=None, nonlin=jax.nn.relu, D_emb=4, eps=1e-6
+):  # jax.nn.relu, jnp.tanh
+    N, S, F = X.shape
+
+    # One embedding vector per site, [S, D_emb]
+    site_emb = numpyro.sample(
+        "park_emb", dist.Normal(0, 1).expand([S, D_emb]).to_event(2)
+    )
+    # Broadcast embeddings across batch dimension -> [N, S, D_emb]
+    site_emb_batched = jnp.broadcast_to(site_emb[None, :, :], (N, S, D_emb))
+
+    # Concatenate embeddings to input features -> [N, S, F + D_emb]
+    X_aug = jnp.concatenate([X, site_emb_batched], axis=-1)
+    F_aug = F + D_emb
+
+    w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F_aug, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.0, 1).expand([16]).to_event(1))
+
+    w2 = numpyro.sample("w2", dist.Normal(0.0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.0, 1).expand([8]).to_event(1))
+
+    w3mu = numpyro.sample("w3mu", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3mu = numpyro.sample("b3mu", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    w3k = numpyro.sample("w3k", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3k = numpyro.sample("b3k", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    # Forward pass
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X_aug, w1) + b1)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+    mu = numpyro.deterministic(
+        "mu",
+        jax.nn.softplus(  # jax.nn.softplus, jnp.exp
+            (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu)
+            .squeeze(-1)
+            .mean(axis=1)  # TODO: mean or sum, softplus before mean?
+        )
+        + eps,
+    )
+    alpha = numpyro.deterministic(
+        "alpha",
+        jax.nn.softplus(
+            (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k)
+            .squeeze(-1)
+            .mean(axis=1)  # TODO: mean or sum, softplus before mean?
+        )
+        + 1e-3,
+    )
+    rate = alpha / mu
+
+    # Likelihood: Y ~ Gamma(k, k/mu)
+    with numpyro.plate("data", N):
+        numpyro.sample("Y", dist.Gamma(concentration=alpha, rate=rate), obs=Y)
+
+
+def model_mw_gamma_extended(
+    X, Y=None, nonlin=jax.nn.relu, eps=1e-6
+):  # jax.nn.relu, jnp.tanh
+    N, S, F = X.shape
+
+    w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F, 16]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.0, 1).expand([16]).to_event(1))
+
+    w2 = numpyro.sample("w2", dist.Normal(0.0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.0, 1).expand([8]).to_event(1))
+
+    w3mu = numpyro.sample("w3mu", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3mu = numpyro.sample("b3mu", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    w3k = numpyro.sample("w3k", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3k = numpyro.sample("b3k", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    # Learned shared pooling weights over S
+    agg_logits = numpyro.sample(
+        "agg_logits", dist.Normal(0.0, 1.0).expand([S]).to_event(1)
+    )
+    agg_w = numpyro.deterministic(
+        "agg_w", jax.nn.softmax(agg_logits)
+    )  # shape (S,), sum=1
+
+    # Forward pass
+    z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+
+    mu_raw = (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1)
+    alpha_raw = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1)
+
+    # Weighted aggregation
+    mu_agg = jnp.sum(mu_raw * agg_w[None, :], axis=1)  # (N,)
+    alpha_agg = jnp.sum(alpha_raw * agg_w[None, :], axis=1)  # (N,)
+
+    mu = numpyro.deterministic("mu", jax.nn.softplus(mu_agg) + eps)
+    alpha = numpyro.deterministic("alpha", jax.nn.softplus(alpha_agg) + 1e-3)
+
     rate = alpha / mu
 
     # Likelihood: Y ~ Gamma(k, k/mu)
