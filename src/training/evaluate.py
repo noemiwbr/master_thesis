@@ -14,7 +14,12 @@ from data_processing.utils import (
     load_torch_model,
     QuantileDistribution,
 )
-from models.model import model_mw_gamma, model_cf_logitnormal, model_cf_beta
+from models.model import (
+    model_mw_gamma,
+    model_cf_logitnormal,
+    model_cf_beta,
+    model_mw_gamma_extended,
+)
 import torch
 import re
 
@@ -102,7 +107,14 @@ def evaluate_model(model, data, quantiles, model_cfg, data_cfg):
 
 
 def evaluate_numpyro(
-    model, rng_key_predict, data, model_cfg, samples=None, svi_params=None, guide=None
+    model,
+    rng_key_predict,
+    data,
+    model_cfg,
+    samples=None,
+    svi_params=None,
+    guide=None,
+    member=0,
 ):
 
     X_test = data["X_test"]
@@ -120,8 +132,8 @@ def evaluate_numpyro(
         model_cfg.name in ["model_mw_gamma", "model_cf_beta", "model_mw_gamma_extended"]
         and X_test.ndim == 4
     ):
-        X_test = X_test[:, :, 0]  # first ensemble member
-        X_train = X_train[:, :, 0]
+        X_test = X_test[:, :, member]  # first ensemble member
+        X_train = X_train[:, :, member]
 
     if svi_params is None:
         # MCMC
@@ -176,13 +188,15 @@ def evaluate_numpyro(
     metrics["crps"] = ps.crps_ensemble(Y_test, y_pred, axis=0).mean()
 
     # Percentiles shape: [t_test, 2]
-    return metrics, y_pred, predictive, y_pred_median, percentiles.T, hdis
+    return metrics, y_pred, pp_samples, y_pred_median, percentiles.T, hdis
 
 
-def test_BNN(file_name, eval_data):
+def test_BNN(file_name, eval_data, member=0):
 
-    if len(eval_data["X_eval"].shape) == 4:
-        eval_data["X_eval"] = eval_data["X_eval"][:, :, 0]
+    eval_data_x = eval_data["X_eval"]
+    if len(eval_data_x.shape) == 4:
+        eval_data_x = eval_data_x[:, :, member]
+        print(f"Choose ensemble member {member}")
 
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
@@ -203,19 +217,20 @@ def test_BNN(file_name, eval_data):
     model_mapping = {
         "model_cf_beta": model_cf_beta,
         "model_mw_gamma": model_mw_gamma,
+        "model_mw_gamma_extended": model_mw_gamma_extended,
         "model_cf_logitnormal": model_cf_logitnormal,
     }
 
+    model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
+
     for i, bz in enumerate(bid_zones):
-        print(i, bz)
 
         # Load bid zone specific trained model checkpoint
         # TODO make it bidzone specific
-        model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
         bz_from_checkpoint = re.search(r"(ELSPOT_[A-Z0-9]+)$", file_name).group(1)
+
         if bz != bz_from_checkpoint:
             continue
-        print(file_name)
         checkpoint = load_checkpoint(
             file_name=file_name
         )  # TODO make it bid zone specific
@@ -224,7 +239,7 @@ def test_BNN(file_name, eval_data):
         _, rng_key_predict = random.split(checkpoint["rng_key"])
 
         predictive = Predictive(model_mapping[model_name], checkpoint["samples"])(
-            rng_key_predict, eval_data["X_eval"]
+            rng_key_predict, eval_data_x
         )
 
         preds = predictive["Y"]
@@ -240,28 +255,30 @@ def test_BNN(file_name, eval_data):
             [median, hdi_lower, hdi_upper]
         )
 
-        break  # TODO no checkpoints for other bid zones so far
+        # TODO no checkpoints for other bid zones so far
 
-    return forecast, forecast_extended
+    return forecast, forecast_extended, bz_from_checkpoint
 
 
-def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
+def test_QR(
+    file_name, eval_data, ensembles=False, from_now_to_forecast=False, member=0
+):
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
 
-    assert (
-        from_now_to_forecast and len(eval_data["X_eval"].shape) == 4
-    ), "forecast has to have 4 dimensions"
+    # assert (
+    #     from_now_to_forecast and len(eval_data["X_eval"].shape) == 4
+    # ), "forecast has to have 4 dimensions"
 
-    if from_now_to_forecast:
-        feature_cols = eval_data["feature_cols"]
-        idx = [i for i, c in enumerate(feature_cols) if c != "avg_ensemble_var"]
-        X_eval = eval_data["X_eval"][:, :, 0, idx]
+    # if from_now_to_forecast:
+    #     feature_cols = eval_data["feature_cols"]
+    #     idx = [i for i, c in enumerate(feature_cols) if c != "avg_ensemble_var"]
+    #     X_eval = eval_data["X_eval"][:, :, 0, idx]
 
+    eval_data_x = eval_data["X_eval"]
     if len(eval_data["X_eval"].shape) == 4 and not ensembles:
-        X_eval = eval_data["X_eval"][:, :, 0]
-    else:
-        X_eval = eval_data["X_eval"]
+        eval_data_x = eval_data["X_eval"][:, :, member]
+        print(f"Choose ensemble member {member}")
 
     forecast = pd.DataFrame(
         index=eval_data["index"],
@@ -280,7 +297,8 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
     for i, bz in enumerate(bid_zones):
         # extract bid zone
         # TODO only for one bid zone so far
-        if i != (int(file_name.split("NO")[-1]) - 1):
+        bz_from_checkpoint = re.search(r"(ELSPOT_[A-Z0-9]+)$", file_name).group(1)
+        if bz != bz_from_checkpoint:  # (int(file_name.split("NO")[-1]) - 1):
             continue
 
         loaded_model, checkpoint_data = load_torch_model(file_name=file_name)
@@ -289,7 +307,7 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
         with torch.no_grad():
 
             if "Quantile" in checkpoint_data["model_cfg"].name:
-                y_sum_pred = loaded_model(torch.tensor(X_eval))
+                y_sum_pred = loaded_model(torch.tensor(eval_data_x))
 
                 if "cf" in file_name:
                     y_sum_pred *= eval_data["Y_eval_aval"][:, None]
@@ -318,11 +336,11 @@ def test_QR(file_name, eval_data, ensembles=False, from_now_to_forecast=False):
 
             else:  # TODO catch more models here
                 y_sum_pred = loaded_model(
-                    torch.tensor(X_eval)
+                    torch.tensor(eval_data_x)
                 ).numpy()  # TODO * eval_data["Y_eval_aval"]  # CF
                 medians = y_sum_pred  # np.percentile(y_sum_pred, 50, axis=0)
                 forecast_extended[i]["median"] = medians
 
         forecast[bz] = medians
 
-    return forecast, forecast_extended
+    return forecast, forecast_extended, bz_from_checkpoint
