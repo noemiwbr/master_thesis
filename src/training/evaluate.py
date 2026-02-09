@@ -18,6 +18,10 @@ from models.model import model_mw_gamma, model_cf_logitnormal, model_cf_beta
 import torch
 import re
 
+from skforecast.metrics import crps_from_quantiles
+import properscoring as ps
+from data_processing.utils import QuantileDistribution
+
 
 def predict(model, data, model_cfg, split="test"):
 
@@ -50,6 +54,18 @@ def rmse_on_quantile(y_true, y_pred_q, quantiles, q=0.5):
     return rmse(y_true, y_pred_q[:, q_idx])
 
 
+def crps_from_quantiles_torch(y_true, y_pred, quantiles):
+    Y = y_true.detach().cpu().numpy()
+    Q = y_pred.detach().cpu().numpy()
+    taus = quantiles.detach().cpu().numpy()
+
+    total = 0.0
+    n = Y.shape[0]
+    for i in range(n):
+        total += crps_from_quantiles(float(Y[i]), Q[i], taus)
+    return total / n
+
+
 def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
     ql = torch.argmin(torch.abs(quantiles - lower))
     qu = torch.argmin(torch.abs(quantiles - upper))
@@ -73,57 +89,91 @@ def evaluate_model(model, data, quantiles, model_cfg, data_cfg):
         metrics["rmse_median"] = rmse(y_true, y_pred)
         metrics["coverage_025_975"] = 0
         metrics["coverage_0_50"] = 0
+        metrics["crps"] = None
     else:
         metrics["rmse_median"] = rmse_on_quantile(y_true, y_pred, quantiles, q=0.5)
         metrics["coverage_025_975"] = coverage(y_true, y_pred, quantiles=quantiles)
         metrics["coverage_0_50"] = coverage(
             y_true, y_pred, quantiles=quantiles, lower=0, upper=0.5
         )
+        metrics["crps"] = crps_from_quantiles_torch(y_true, y_pred, quantiles)
 
     return metrics, y_pred
 
 
-def evaluate_numpyro(model, samples, rng_key_predict, data, model_cfg):
+def evaluate_numpyro(
+    model, rng_key_predict, data, model_cfg, samples=None, svi_params=None, guide=None
+):
 
     X_test = data["X_test"]
     X_train = data["X_train"]
-    Y = data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
 
-    # Handle forecast vs nowcast
-    if model_cfg.name in ["model_mw_gamma", "model_cf_beta"] and X_test.ndim == 4:
-        X_test = X_test[:, :, 0]  # first ensemble member
-        X_train = X_train[:, :, 0]
-
-    predictive = Predictive(model, samples)(rng_key_predict, X_test)
-
-    # Print the RMSE on the training data - sanity check that the model learns something
+    Y_test = (
+        data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+    )
     Y_train = (
         data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
     )
-    predictive_train = Predictive(model, samples)(rng_key_predict, X_train)
-    y_pred_train = (
-        predictive_train["Y"]
-        if model_cfg.params.target == "gen"
-        else predictive_train["Y"] * data["Y_train_aval"]
-    )
-    y_pred_median_train = np.percentile(y_pred_train, 50, axis=0)
-    print("RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
+
+    # Handle forecast vs nowcast
+    if (
+        model_cfg.name in ["model_mw_gamma", "model_cf_beta", "model_mw_gamma_extended"]
+        and X_test.ndim == 4
+    ):
+        X_test = X_test[:, :, 0]  # first ensemble member
+        X_train = X_train[:, :, 0]
+
+    if svi_params is None:
+        # MCMC
+        predictive = Predictive(
+            model,
+            samples,
+            return_sites=["mu", "alpha", "Y"],
+        )
+
+    else:
+        # SVI
+        predictive = Predictive(
+            model,
+            return_sites=["mu", "alpha", "Y"],
+            params=svi_params,
+            guide=guide,
+            num_samples=model_cfg.args.num_samples,
+        )
+
+    pp_samples = predictive(rng_key_predict, X=X_test, Y=None)  # TODO: fix SVI
+    print(pp_samples.keys())
+    pp_samples_train = predictive(rng_key_predict, X=X_train, Y=None)
 
     # Handle CF prediction, transform it back to generation prediction
     y_pred = (
-        predictive["Y"]
+        pp_samples["Y"]
         if model_cfg.params.target == "gen"
-        else predictive["Y"] * data["Y_test_aval"]
+        else pp_samples["Y"] * data["Y_test_aval"]
     )
+    y_pred_train = (
+        pp_samples_train["Y"]
+        if model_cfg.params.target == "gen"
+        else pp_samples_train["Y"] * data["Y_train_aval"]
+    )
+
+    # Metrics (train and val set)
+    y_pred_median_train = np.percentile(y_pred_train, 50, axis=0)
+    print("RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
+    print("CRPS train: ", ps.crps_ensemble(Y_train, y_pred_train, axis=0).mean())
+
     y_pred_median = np.percentile(y_pred, 50, axis=0)
     percentiles = np.percentile(y_pred, [2.5, 97.5], axis=0)
     hdis = az.hdi(np.expand_dims(y_pred, axis=0), hdi_prob=0.95).T
 
     metrics = {}
 
-    metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
-    metrics["coverage_025_975"] = ((Y >= percentiles[0]) & (Y <= percentiles[1])).mean()
-    metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
+    metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y_test) ** 2))
+    metrics["coverage_025_975"] = (
+        (Y_test >= percentiles[0]) & (Y_test <= percentiles[1])
+    ).mean()
+    metrics["coverage_0_50"] = (Y_test <= y_pred_median).mean()
+    metrics["crps"] = ps.crps_ensemble(Y_test, y_pred, axis=0).mean()
 
     # Percentiles shape: [t_test, 2]
     return metrics, y_pred, predictive, y_pred_median, percentiles.T, hdis
@@ -157,11 +207,15 @@ def test_BNN(file_name, eval_data):
     }
 
     for i, bz in enumerate(bid_zones):
+        print(i, bz)
 
         # Load bid zone specific trained model checkpoint
         # TODO make it bidzone specific
         model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
-
+        bz_from_checkpoint = re.search(r"(ELSPOT_[A-Z0-9]+)$", file_name).group(1)
+        if bz != bz_from_checkpoint:
+            continue
+        print(file_name)
         checkpoint = load_checkpoint(
             file_name=file_name
         )  # TODO make it bid zone specific
