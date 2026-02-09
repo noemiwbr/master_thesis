@@ -81,6 +81,116 @@ def plot_qr_hdi_prediction(
     return fig, axes
 
 
+def plot_qr_hdi_prediction_ensemble(
+    Y_true,
+    ensemble_results,
+    n_plot=1000,
+    cred_mass=0.95,
+    title="QR Power Generation Prediction",
+):
+    fig, axes = plt.subplots(
+        nrows=3,
+        figsize=(15, 5),
+        sharex=True,
+        constrained_layout=True,
+        gridspec_kw={"height_ratios": [3, 1, 1]},
+    )
+
+    # Top plot
+    ax = axes[0]
+    ax.plot(
+        Y_true[:n_plot],
+        ".",
+        color="black",
+        label="Observed data",
+        markersize=4,
+    )
+
+    ax.fill_between(
+        np.arange(n_plot),
+        ensemble_results["hdi_lower_0"][:n_plot],
+        ensemble_results["hdi_upper_0"][:n_plot],
+        color="#A6CEE3",
+        alpha=0.5,
+        label=f"{int(cred_mass * 100)}% credible interval",
+    )
+
+    ax.plot(
+        ensemble_results["median_0"][:n_plot],
+        color="red",
+        label="Posterior median",
+        lw=2,
+    )
+
+    ax.set(
+        ylabel="Total power",
+        title=title,
+    )
+    ax.set_ylim([0, 800])
+
+    keys = ["median", "hdi_upper", "hdi_lower"]
+    colors = ["blue", "blue", "blue"]
+
+    for c, k in zip(colors, keys):
+        # Ensemble mean of median
+        ax.plot(
+            ensemble_results["mean_" + k][:n_plot],
+            color=c,
+            lw=2,
+            alpha=0.5,
+            linestyle="-",
+            label=f"Ensemble mean (of {k})",
+        )
+        # Ensemble mean of median
+        ax.plot(
+            ensemble_results["mean_" + k][:n_plot]
+            + ensemble_results["std_" + k][:n_plot],
+            color=c,
+            lw=2,
+            alpha=0.2,
+            linestyle="-",
+            # label=f"Ensemble std (of {k})",
+        )
+        # Ensemble mean of median
+        ax.plot(
+            ensemble_results["mean_" + k][:n_plot]
+            - ensemble_results["std_" + k][:n_plot],
+            color=c,
+            lw=2,
+            alpha=0.2,
+            linestyle="-",
+            label=f"Ensemble std (of {k})",
+        )
+
+    # ax.legend()
+
+    # Bottom panel
+    width = (
+        ensemble_results["hdi_upper_0"][:n_plot]
+        - ensemble_results["hdi_lower_0"][:n_plot]
+    )
+    width_min_max = (
+        ensemble_results["median_0"][:n_plot] - ensemble_results["hdi_lower_0"][:n_plot]
+    ) / width
+    ax2 = axes[1]
+    ax2.plot(width_min_max, color="#A6CEE3")
+    ax2.set(
+        xlabel="Time index",
+        ylabel="Interval width",
+        title=f"Min max normalized median",
+    )
+
+    ax3 = axes[2]
+    ax3.plot(width, color="#A6CEE3")
+    ax3.set(
+        xlabel="Time index",
+        ylabel="Interval width",
+        title=f"{int(cred_mass * 100)}% Credible Interval Width",
+    )
+
+    return fig, axes
+
+
 def extract_quantile_curves(
     Y_pred_quantiles,
     quantiles,
