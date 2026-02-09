@@ -20,11 +20,11 @@ def plot_qr_hdi_prediction(
     title="QR Power Generation Prediction",
 ):
     fig, axes = plt.subplots(
-        nrows=2,
-        figsize=(15, 4),
+        nrows=3,
+        figsize=(15, 5),
         sharex=True,
         constrained_layout=True,
-        gridspec_kw={"height_ratios": [3, 1]},
+        gridspec_kw={"height_ratios": [3, 1, 1]},
     )
 
     # Top plot
@@ -61,9 +61,18 @@ def plot_qr_hdi_prediction(
 
     # Bottom panel
     width = conf_interval[:n_plot, 1] - conf_interval[:n_plot, 0]
+    width_min_max = (medians[:n_plot] - conf_interval[:n_plot, 0]) / width
     ax2 = axes[1]
-    ax2.plot(width, color="#A6CEE3")
+    ax2.plot(width_min_max, color="#A6CEE3")
     ax2.set(
+        xlabel="Time index",
+        ylabel="Interval width",
+        title=f"Min max normalized median",
+    )
+
+    ax3 = axes[2]
+    ax3.plot(width, color="#A6CEE3")
+    ax3.set(
         xlabel="Time index",
         ylabel="Interval width",
         title=f"{int(cred_mass * 100)}% Credible Interval Width",
