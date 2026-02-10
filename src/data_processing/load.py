@@ -1345,7 +1345,7 @@ def rename_met_forecast_columns(df):
     Handles ensemble members and drops columns not present in nowcast (e.g., gust).
     Handles both single-digit (_0, _1) and zero-padded (_00, _01) member formats.
     """
-    print(df.index)
+
     renamed = {}
     columns_to_drop = []
 

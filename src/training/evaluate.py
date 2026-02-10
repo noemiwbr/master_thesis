@@ -28,13 +28,14 @@ import properscoring as ps
 from data_processing.utils import QuantileDistribution
 
 
-def predict(model, data, model_cfg, split="test"):
+def predict(model, data, model_cfg, split="test", member=0):
 
     X = data[f"X_{split}"]
 
     # Model-specific input handling
     if model_cfg.name == "WindPowerQuantile" and X.ndim == 4:
-        X = X[:, :, 0]
+        X = X[:, :, member]
+        print(f"Choose member {member}")
 
     if model_cfg.name == "WindPowerQuantileEnsembles" and X.ndim != 4:
         raise ValueError(
@@ -80,14 +81,14 @@ def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
     )
 
 
-def evaluate_model(model, data, quantiles, model_cfg, data_cfg):
+def evaluate_model(model, data, quantiles, model_cfg, data_cfg, member=0):
     data = to_tensor(data, data_cfg)
 
     y_true = (
         data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
     )
 
-    y_pred = predict(model, data, model_cfg, split="test")
+    y_pred = predict(model, data, model_cfg, split="test", member=member)
 
     metrics = {}
     if model_cfg.name == "WindPowerModel_simple":  # no quantiles
@@ -154,7 +155,7 @@ def evaluate_numpyro(
         )
 
     pp_samples = predictive(rng_key_predict, X=X_test, Y=None)  # TODO: fix SVI
-    print(pp_samples.keys())
+
     pp_samples_train = predictive(rng_key_predict, X=X_train, Y=None)
 
     # Handle CF prediction, transform it back to generation prediction

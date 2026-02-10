@@ -197,7 +197,7 @@ def load_torch_model(
         raise FileNotFoundError(f"Checkpoint file not found: {path}")
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    print(checkpoint)
+
     model_class_name = checkpoint["model_cfg"].name
     num_features = checkpoint["num_features"]
     target = checkpoint["model_cfg"].params.target

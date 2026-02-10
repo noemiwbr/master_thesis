@@ -666,7 +666,7 @@ def plot_posterior_predictive_family(
     if Y_true is not None:
         print("Y not none")
         y_true = float(Y_true[t])
-        print(y_true)
+
         for ax in axes:
             ax.axvline(y_true, color="red", lw=2, linestyle="--", label="True Y")
             if "gamma" in model_name:
