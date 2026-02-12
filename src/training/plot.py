@@ -126,7 +126,6 @@ def plot_qr_hdi_prediction_ensemble(
         ylabel="Total power",
         title=title,
     )
-    ax.set_ylim([0, 800])
 
     keys = ["median", "hdi_upper", "hdi_lower"]
     colors = ["blue", "blue", "blue"]
