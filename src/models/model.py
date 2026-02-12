@@ -346,6 +346,59 @@ def model_mw_gamma_extended(
         numpyro.sample("Y", dist.Gamma(concentration=alpha, rate=rate), obs=Y)
 
 
+def model_mw_gamma_extended_site1(X, Y=None, nonlin=jax.nn.relu, eps=1e-6):
+    N, S, F = X.shape
+
+    # First layer: 15 shared + 1 park-specific
+    w1_shared = numpyro.sample("w1", dist.Normal(0.0, 1.0).expand([F, 15]).to_event(2))
+    b1_shared = numpyro.sample("b1", dist.Normal(0.0, 1.0).expand([15]).to_event(1))
+
+    # Park-specific weights for ONE hidden unit per site
+    w1_site = numpyro.sample(
+        "w1_site", dist.Normal(0.0, 1.0).expand([S, F]).to_event(2)
+    )
+    b1_site = numpyro.sample("b1_site", dist.Normal(0.0, 1.0).expand([S]).to_event(1))
+
+    w2 = numpyro.sample("w2", dist.Normal(0.0, 1).expand([16, 8]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.0, 1).expand([8]).to_event(1))
+
+    w3mu = numpyro.sample("w3mu", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3mu = numpyro.sample("b3mu", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    w3k = numpyro.sample("w3k", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b3k = numpyro.sample("b3k", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    agg_logits = numpyro.sample(
+        "agg_logits", dist.Normal(0.0, 1.0).expand([S]).to_event(1)
+    )
+    agg_w = numpyro.deterministic("agg_w", jax.nn.softmax(agg_logits))
+
+    # Shared projection -> (N,S,15)
+    z1_shared = nonlin(jnp.einsum("nsf,fh->nsh", X, w1_shared) + b1_shared)
+
+    # Park-specific projection -> (N,S)
+    z1_site = nonlin(jnp.einsum("nsf,sf->ns", X, w1_site) + b1_site)
+
+    # Combine -> (N,S,16)
+    z1 = jnp.concatenate([z1_shared, z1_site[..., None]], axis=-1)
+
+    z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+
+    mu_raw = (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1)
+    alpha_raw = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1)
+
+    mu_agg = jnp.sum(mu_raw * agg_w[None, :], axis=1)
+    alpha_agg = jnp.sum(alpha_raw * agg_w[None, :], axis=1)
+
+    mu = numpyro.deterministic("mu", jax.nn.softplus(mu_agg) + eps)
+    alpha = numpyro.deterministic("alpha", jax.nn.softplus(alpha_agg) + 1e-3)
+
+    rate = alpha / mu
+
+    with numpyro.plate("data", N):
+        numpyro.sample("Y", dist.Gamma(concentration=alpha, rate=rate), obs=Y)
+
+
 def model_cf_beta(X, Y=None, nonlin=jnp.tanh, eps=1e-6):
     N, S, F = X.shape
 
