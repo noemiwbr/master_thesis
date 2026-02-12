@@ -19,6 +19,7 @@ from models.model import (
     model_cf_logitnormal,
     model_cf_beta,
     model_mw_gamma_extended,
+    model_mw_gamma_extended_site1,
 )
 import torch
 import re
@@ -130,7 +131,13 @@ def evaluate_numpyro(
 
     # Handle forecast vs nowcast
     if (
-        model_cfg.name in ["model_mw_gamma", "model_cf_beta", "model_mw_gamma_extended"]
+        model_cfg.name
+        in [
+            "model_mw_gamma",
+            "model_cf_beta",
+            "model_mw_gamma_extended",
+            "model_mw_gamma_extended_site1",
+        ]
         and X_test.ndim == 4
     ):
         X_test = X_test[:, :, member]  # first ensemble member
@@ -219,6 +226,7 @@ def test_BNN(file_name, eval_data, member=0):
         "model_cf_beta": model_cf_beta,
         "model_mw_gamma": model_mw_gamma,
         "model_mw_gamma_extended": model_mw_gamma_extended,
+        "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
         "model_cf_logitnormal": model_cf_logitnormal,
     }
 

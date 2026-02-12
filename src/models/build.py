@@ -9,6 +9,7 @@ from models.model import (
     model_mw_gamma,
     model_cf_beta,
     model_mw_gamma_extended,
+    model_mw_gamma_extended_site1,
 )
 import numpy as np
 
@@ -23,6 +24,7 @@ NUMPYRO_MODELS = {
     "model_mw_gamma": model_mw_gamma,
     "model_cf_beta": model_cf_beta,
     "model_mw_gamma_extended": model_mw_gamma_extended,
+    "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
 }
 
 
