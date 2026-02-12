@@ -16,11 +16,42 @@ from data_processing.preprocess import (
 )
 from data_processing.features import (
     sin_cos_transform,
-    scale_features,
     get_input_shaped,
-    get_scaler_params,
-    apply_scaler_params,
+    scale_features_nowcast,
+    scale_forecast_with_nowcast_scalers,
+    apply_scale_features_nowcast,
 )
+
+import pickle
+
+
+# Load scaler parameters for a specific bid zone
+def load_scaler_params(
+    bid_zone="ELSPOT_NO1", dataset="nowcast", dir_path="../checkpoints"
+):
+
+    bid_zone_clean = bid_zone.replace(" ", "_")
+    filename = f"scaler_params_{bid_zone_clean}_{dataset}.pkl"
+    path = os.path.join(dir_path, filename)
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No scaler parameters found for {bid_zone} and {dataset} at {path}\n"
+            f"Run load_and_preprocess_data() and save_scaler_params() first."
+        )
+
+    with open(path, "rb") as f:
+        state = pickle.load(f)
+
+    print(f"Loaded scaler parameters for {state['bid_zone']} and {dataset}")
+    print(f"  Saved at: {state['saved_at']}")
+    if state["split_time"]:
+        print(f"  Split time: {state['split_time']}")
+
+    return {
+        "scaler_params": state["scaler_params"],
+        "site_scaler_params": state["site_scaler_params"],
+    }
 
 
 def load_weather_forecast(path: str):
@@ -80,7 +111,11 @@ def get_feature_columns():
     ]
     feature_cols.sort()
     site_meta_cols = ["operating_power_max", "windpark_id"]
-    scale_cols = [c for c in feature_cols if not c.startswith("wind_direction")]
+    scale_cols = [
+        c
+        for c in feature_cols
+        if not (c.startswith("wind_direction") or c.startswith("hour"))
+    ]  # TODO: how to handle wind_direction and hours? Additional scaling?
 
     return feature_cols, site_meta_cols, scale_cols
 
@@ -279,12 +314,9 @@ def load_and_preprocess_data(
     )
 
     # 7. Scale features and metadata
-    df_train_X_scaled, df_test_X_scaled = scale_features(
+    df_train_X_scaled, df_test_X_scaled, scaler_params = scale_features_nowcast(
         df_train_X, df_test_X, scale_cols
     )
-
-    # Get scaler parameters for later use
-    scaler_params = get_scaler_params(df_train_X, scale_cols)
 
     # Scale site metadata
     sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
@@ -374,6 +406,10 @@ def load_and_preprocess_forecast_data(
     )
     windpower = load_windpower(f"{data_path}/wind_power_per_bidzone.parquet")
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
+
+    scaler_params_nowcast = load_scaler_params(
+        bid_zone=bid_zone.replace(" ", "_"), dataset="nowcast"
+    )["scaler_params"]
 
     # ------------------------------------------------------------
     # 2. Filter relevant bid zone and time steps
@@ -514,57 +550,17 @@ def load_and_preprocess_forecast_data(
 
     # ------------------------------------------------------------
     # 7. Standardize features
-
-    weather_train = weather_forecast_full_cap[
-        weather_forecast_full_cap.index <= split_time
-    ]
-    mean_train = weather_train[scale_cols].mean()
-    std_train = weather_train[scale_cols].std()
-    std_train = std_train.clip(lower=1e-6)
-
-    # TODO save in a useful way
-    scaler_params = {
-        "mean": mean_train.to_numpy(dtype=np.float32),
-        "scale": std_train.to_numpy(dtype=np.float32),
-        "columns": scale_cols,
-    }
-
-    weather_scaled = weather_forecast_full_cap.copy()
-    weather_scaled[scale_cols] = (
-        weather_forecast_full_cap[scale_cols] - mean_train
-    ) / std_train
-    print(weather_scaled[scale_cols].describe().loc[["mean", "std"]])
-
-    # Handle shifted columns, use same scaler as base column to avoid distribution shift
-    scale_shifted = [
-        f"{col}_member_{i}"
-        for col in ["wind_speed_10m+1", "wind_speed_10m-1"]
-        for i in range(15)
-    ]
-    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
-
-    for col in scale_shifted:
-        m = shifted_pattern.match(col)
-        if not m:
-            raise ValueError(f"Unexpected shifted wind speed column name: {col}")
-
-        i = m.group(1)
-        base_col = f"wind_speed_10m_member_{i}"
-
-        if base_col not in mean_train.index:
-            raise KeyError(
-                f"{base_col} not found in fitted scaler columns (scale_cols)."
-            )
-
-        mu = mean_train[base_col]
-        sigma = std_train[base_col]
-
-        weather_scaled[col] = (weather_forecast_full_cap[col] - mu) / sigma
+    weather_scaled = scale_forecast_with_nowcast_scalers(
+        weather_forecast_full_cap,
+        scaler_params_nowcast,
+    )
 
     sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
 
     # ------------------------------------------------------------
     # 8. Calculate variance
+    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
+
     if variance_feature:
 
         def split_col(col):
@@ -691,7 +687,7 @@ def load_and_preprocess_forecast_data(
         "sites_meta": sites_meta,
         "feature_cols": feature_cols,
         "ensemble_members": ensemble_members,
-        "scaler_params": scaler_params,
+        "scaler_params": scaler_params_nowcast,
         "site_scaler_params": site_scaler_params,
     }
 
@@ -979,7 +975,7 @@ def load_evaluation_data(
     weather_features = weather_multiindex[feature_cols]
 
     # Apply scaling using training scaler parameters
-    weather_scaled = apply_scaler_params(weather_features, scaler_params)
+    weather_scaled = apply_scale_features_nowcast(weather_features, scaler_params)
     sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
 
     # 7. Convert to arrays
@@ -1033,7 +1029,6 @@ def load_evaluation_forecast_data(
 
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
     windparks = filter_bid_zone(windparks, bid_zone)
-    windpark_names = windparks["substation_name"].to_list()
     weather = []
     power = []
 
@@ -1065,10 +1060,6 @@ def load_evaluation_forecast_data(
             "wind_direction_10m_x",
             "wind_direction_10m_y",
         ]
-
-        scale_cols = scaler_params["columns"]
-        scaler_mean = pd.Series(scaler_params["mean"], index=scale_cols)
-        scaler_std = pd.Series(scaler_params["scale"], index=scale_cols)
 
         global_cols = [
             "hour_x",
@@ -1205,36 +1196,13 @@ def load_evaluation_forecast_data(
     # Apply scaler parameters
     sites_meta, _ = scale_site_metadata(sites_meta_unscaled, site_scaler_params)
 
-    weather_scaled = weather_forecast_transformed.copy()
-    weather_scaled.loc[:, scale_cols] = (
-        weather_forecast_transformed.loc[:, scale_cols]
-        .sub(scaler_mean, axis=1)
-        .div(scaler_std, axis=1)
+    weather_scaled = scale_forecast_with_nowcast_scalers(
+        weather_forecast_transformed, scaler_params
     )
-
-    # Handle shifted columns, use same scaler as base column to avoid distribution shift
-    scale_shifted = [
-        f"{col}_member_{i}"
-        for col in ["wind_speed_10m+1", "wind_speed_10m-1"]
-        for i in range(15)
-    ]
-    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
-    for col in scale_shifted:
-        m = shifted_pattern.match(col)
-        i = m.group(1)
-        base_col = f"wind_speed_10m_member_{i}"
-
-        if base_col not in scale_cols:
-            raise KeyError(
-                f"{base_col} not found in fitted scaler columns (scale_cols)."
-            )
-        mu = scaler_mean[base_col]
-        sigma = scaler_std[base_col]
-
-        weather_scaled[col] = (weather_scaled[col] - mu) / sigma
 
     # ------------------------------------------------------------
     # Calculate variance across ensemble members
+    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
     if variance_feature:
 
         def split_col(col):

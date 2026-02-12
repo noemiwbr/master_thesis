@@ -1,6 +1,6 @@
 import pandas as pd
 import jax.numpy as jnp
-from sklearn.preprocessing import StandardScaler
+import re
 
 
 # Use sin (North-South) and cos (East-West) instead of degree
@@ -29,46 +29,116 @@ def sin_cos_transform(df, columns=None, prefix=None, n_members=None):
     return pd.concat([df, sin_cos_transformed], axis=1).drop(cols, axis=1)
 
 
-# Scaling of input features
-def scale_features(train_df, test_df, scale_cols):
-    scaler = StandardScaler()
-    train_scaled = scaler.fit_transform(train_df[scale_cols])
-    # Transform test data using same scaler
-    test_scaled = scaler.transform(test_df[scale_cols])
-    train_scaled_df = pd.DataFrame(
-        train_scaled, columns=scale_cols, index=train_df.index
-    )
-    test_scaled_df = pd.DataFrame(test_scaled, columns=scale_cols, index=test_df.index)
+def scale_features_nowcast(train_df, test_df, scale_cols, eps=1e-6):
 
-    # Keep non-scaled columns (e.g. wind dir - already transformed)
-    missing_columns = [col for col in train_df.columns if col not in scale_cols]
-    train_scaled_df[missing_columns] = train_df[missing_columns]
-    test_scaled_df[missing_columns] = test_df[missing_columns]
-    return train_scaled_df, test_scaled_df
+    shifted_cols = [c for c in scale_cols if ("+" in c or "-" in c)]
+    base_scale_cols = [c for c in scale_cols if c not in shifted_cols]
 
+    # Fit stats on base cols only
+    mean_train = train_df[base_scale_cols].mean()
+    std_train = train_df[base_scale_cols].std().clip(lower=eps)
 
-# Fit scaler on training data and return parameters for later use.
-def get_scaler_params(train_df, scale_cols):
-    scaler = StandardScaler()
-    scaler.fit(train_df[scale_cols])
-    return {
-        "mean": dict(zip(scale_cols, scaler.mean_)),
-        "scale": dict(zip(scale_cols, scaler.scale_)),
-        "columns": scale_cols,
+    train_scaled = train_df.copy()
+    test_scaled = test_df.copy()
+
+    # Scale base cols normally
+    train_scaled[base_scale_cols] = (train_df[base_scale_cols] - mean_train) / std_train
+    test_scaled[base_scale_cols] = (test_df[base_scale_cols] - mean_train) / std_train
+
+    # Scale shifted cols using their base column stats
+    base_re = re.compile(r"^(.+?)([+-]\d+)$")
+    for col in shifted_cols:
+        base_col = base_re.match(col).group(1)
+
+        mu = mean_train[base_col]
+        sigma = std_train[base_col]
+        train_scaled[col] = (train_df[col] - mu) / sigma
+        test_scaled[col] = (test_df[col] - mu) / sigma
+
+    # Return params for saving
+    scaler_params = {
+        "mean": mean_train.to_dict(),
+        "std": std_train.to_dict(),
+        "columns": base_scale_cols,
+        "shifted_columns": shifted_cols,
     }
 
+    return train_scaled, test_scaled, scaler_params
 
-# Apply pre-computed scaler parameters to new data.
-def apply_scaler_params(df, scaler_params):
-    scale_cols = scaler_params["columns"]
-    mean = scaler_params["mean"]
-    scale = scaler_params["scale"]
 
-    scaled_df = df.copy()
-    for col in scale_cols:
-        scaled_df[col] = (df[col] - mean[col]) / scale[col]
+def apply_scale_features_nowcast(test_df, params):
 
-    return scaled_df
+    shifted_cols = params["shifted_columns"]
+    base_scale_cols = params["columns"]
+
+    mean_train = params["mean"]
+    std_train = params["std"]
+
+    test_scaled = test_df.copy()
+
+    # Scale base cols normally
+    test_scaled[base_scale_cols] = (test_df[base_scale_cols] - mean_train) / std_train
+
+    # Scale shifted cols using their base column stats
+    base_re = re.compile(r"^(.+?)([+-]\d+)$")
+    for col in shifted_cols:
+        base_col = base_re.match(col).group(1)
+
+        mu = mean_train[base_col]
+        sigma = std_train[base_col]
+        test_scaled[col] = (test_df[col] - mu) / sigma
+
+    return test_scaled
+
+
+def scale_forecast_with_nowcast_scalers(
+    forecast_df,
+    nowcast_scaler_params,
+    eps=1e-6,
+):
+    """
+    Scales forecast ensemble-member columns using nowcast mean/std.
+    - x_member_i uses mean/std from x
+    - x+1_member_i (or x-1_member_i etc) uses mean/std from base x
+    """
+    mean = nowcast_scaler_params["mean"]
+    std = nowcast_scaler_params["std"]
+
+    # safety: avoid divide-by-zero
+    std = {k: max(float(v), eps) for k, v in std.items()}
+
+    scaled = forecast_df.copy()
+
+    _MEMBER_RE = re.compile(r"^(?P<name>.+)_member_(?P<i>\d+)$")
+    _SHIFTED_MEMBER_RE = re.compile(
+        r"^(?P<base>.+?)(?P<shift>[+-]\d+)_member_(?P<i>\d+)$"
+    )
+
+    for col in forecast_df.columns:
+
+        m_shift = _SHIFTED_MEMBER_RE.match(col)
+        m_mem = _MEMBER_RE.match(col)
+
+        # 1. shifted member columns: e.g. wind_speed_10m+1_member_i
+        if m_shift:
+            base = m_shift.group("base")  # e.g. wind_speed_10m
+            scaled[col] = (forecast_df[col] - mean[base]) / std[base]
+
+        # 2. normal member columns: e.g. air_temperature_2m_member_i
+        elif m_mem:
+            base = m_mem.group("name")
+            if base in mean and base in std:
+                scaled[col] = (forecast_df[col] - mean[base]) / std[base]
+            # else: leave as-is (not a scaled variable). e.g. wind_direction_10m_x
+
+        # 3. non-member base cols, e.g. hour_x (if we scale it, right now not in use)
+        elif col in mean and col in std:
+            scaled[col] = (forecast_df[col] - mean[col]) / std[col]
+
+        # 4. non-scaled (non-member) columns, e.g. hour_x, windpark_id,...
+        # else: leave as-is
+
+    return scaled
 
 
 # MultiIndex (timestamp, wind park) and feature columns -> np array with shape (timestamps, wind parks, features)
