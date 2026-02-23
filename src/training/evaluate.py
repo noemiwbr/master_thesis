@@ -34,7 +34,10 @@ def predict(model, data, model_cfg, split="test", member=0):
     X = data[f"X_{split}"]
 
     # Model-specific input handling
-    if model_cfg.name == "WindPowerQuantile" and X.ndim == 4:
+    if (
+        model_cfg.name in ["WindPowerQuantile", "WindPowerQuantile_weighted"]
+        and X.ndim == 4
+    ):
         X = X[:, :, member]
         print(f"Choose member {member}")
 
@@ -195,6 +198,9 @@ def evaluate_numpyro(
     metrics["coverage_0_50"] = (Y_test <= y_pred_median).mean()
     metrics["crps"] = ps.crps_ensemble(Y_test, y_pred, axis=0).mean()
 
+    print("RMSE val:", metrics["rmse_median"])
+    print("CRPS val: ", metrics["crps"], "\n")
+
     # Percentiles shape: [t_test, 2]
     return metrics, y_pred, pp_samples, y_pred_median, percentiles.T, hdis
 
@@ -266,7 +272,7 @@ def test_BNN(file_name, eval_data, member=0):
 
         # TODO no checkpoints for other bid zones so far
 
-    return forecast, forecast_extended, bz_from_checkpoint
+    return forecast, forecast_extended, bz_from_checkpoint, preds
 
 
 def test_QR(
@@ -352,4 +358,4 @@ def test_QR(
 
         forecast[bz] = medians
 
-    return forecast, forecast_extended, bz_from_checkpoint
+    return forecast, forecast_extended, bz_from_checkpoint, y_sum_pred

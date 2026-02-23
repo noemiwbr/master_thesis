@@ -6,6 +6,7 @@ from models.model import (
     WindPowerQuantile,
     WindPowerQuantileEnsembles,
     WindPowerModel_simple,
+    WindPowerQuantile_weighted,
     model_mw_gamma,
     model_cf_beta,
     model_mw_gamma_extended,
@@ -18,6 +19,7 @@ TORCH_MODELS = {
     "WindPowerQuantile": WindPowerQuantile,
     "WindPowerQuantileEnsembles": WindPowerQuantileEnsembles,
     "WindPowerModel_simple": WindPowerModel_simple,
+    "WindPowerQuantile_weighted": WindPowerQuantile_weighted,
 }
 
 NUMPYRO_MODELS = {
@@ -53,6 +55,7 @@ def build_torch_model(model_cfg, data):
         "WindPowerQuantile",
         "WindPowerQuantileEnsembles",
         "WindPowerModel_simple",
+        "WindPowerQuantile_weighted",
     }:
         if model_cfg.name == "WindPowerModel_simple":
             return model_cls(
@@ -62,6 +65,14 @@ def build_torch_model(model_cfg, data):
             quantiles = np.linspace(0, 1, 51)
         else:
             quantiles = tuple(model_cfg.params.quantiles)
+
+        if model_cfg.name == "WindPowerQuantile_weighted":
+            return model_cls(
+                num_features=X.shape[-1],
+                num_parks=data["X_train"].shape[-2],
+                quantiles=quantiles,
+                target=model_cfg.params.target,
+            )
 
         return model_cls(
             num_features=X.shape[-1],
