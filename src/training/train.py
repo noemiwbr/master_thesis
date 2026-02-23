@@ -135,6 +135,7 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
         num_features=X.shape[-1],
         dataset=data_cfg.dataset,
         losses=losses,
+        num_parks=X.shape[-2],
     )
 
     return model, losses

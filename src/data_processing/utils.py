@@ -15,6 +15,7 @@ from models.model import (
     WindPowerQuantile,
     WindPowerModel_simple,
     WindPowerQuantileEnsembles,
+    WindPowerQuantile_weighted,
 )
 from data_processing.load import (
     load_weather_forecast_parquet,
@@ -119,6 +120,7 @@ def save_torch_checkpoint(
     losses,
     dataset="forecast",
     dir_path="../checkpoints",
+    num_parks=None,
 ):
 
     os.makedirs(dir_path, exist_ok=True)
@@ -134,6 +136,7 @@ def save_torch_checkpoint(
         "model_class": model.__class__.__name__,
         "model_cfg": model_cfg,
         "num_features": num_features,
+        "num_parks": num_parks,
         "optimizer_state_dict": optimizer.state_dict(),
         "losses": losses,
     }
@@ -148,6 +151,7 @@ def load_torch_model(
     file_name=None,
     model_name=None,
     dir_path="../checkpoints",
+    quantiles=None,
 ):
 
     if file_name is not None:
@@ -171,10 +175,13 @@ def load_torch_model(
 
     model_class_name = checkpoint["model_cfg"].name
     num_features = checkpoint["num_features"]
+    num_parks = checkpoint["num_parks"]
     target = checkpoint["model_cfg"].params.target
 
     # Quantiles
-    if checkpoint["model_cfg"].params.quantiles is None:
+    if quantiles is not None:
+        quantiles = quantiles
+    elif checkpoint["model_cfg"].params.quantiles is None:
         quantiles = torch.linspace(0, 1, 51)
     else:
         quantiles = torch.tensor(checkpoint["model_cfg"].params.quantiles)
@@ -183,6 +190,10 @@ def load_torch_model(
         model = WindPowerQuantile(num_features, quantiles, target)
     elif model_class_name == "WindPowerModel_simple":
         model = WindPowerModel_simple(num_features)
+    elif model_class_name == "WindPowerQuantile_weighted":
+        model = WindPowerQuantile_weighted(
+            num_parks=num_parks, num_features=num_features, quantiles=quantiles
+        )
     elif model_class_name == "WindPowerQuantileEnsembles":
         model = WindPowerQuantileEnsembles(num_features, quantiles, target)
     else:
