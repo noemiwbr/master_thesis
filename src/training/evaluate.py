@@ -359,3 +359,44 @@ def test_QR(
         forecast[bz] = medians
 
     return forecast, forecast_extended, bz_from_checkpoint, y_sum_pred
+
+
+def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_cfg):
+
+    X_test = data["X_train"]
+    Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+
+    # Handle forecast vs nowcast
+    if (
+        model_cfg.name
+        in [
+            "model_mw_gamma",
+            "model_cf_beta",
+            "model_mw_gamma_extended",
+            "model_mw_gamma_extended_site1",
+        ]
+        and X_test.ndim == 4
+    ):
+        X_test = X_test[:, :, 0]  # first ensemble member
+
+    predictive = Predictive(model, samples)(rng_key_predict, X_test)
+
+    # Handle CF prediction, transform it back to generation prediction
+    y_pred = (
+        predictive["Y"]
+        if model_cfg.params.target == "gen"
+        else predictive["Y"] * data["Y_train_aval"]
+    )
+    print(y_pred.shape)
+    y_pred_median = np.percentile(y_pred, 50, axis=0)
+    percentiles = np.percentile(y_pred, [2.5, 97.5], axis=0)
+    hdis = az.hdi(np.expand_dims(y_pred, axis=0), hdi_prob=0.95).T
+
+    metrics = {}
+
+    metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
+    metrics["coverage_025_975"] = ((Y >= percentiles[0]) & (Y <= percentiles[1])).mean()
+    metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
+
+    # Percentiles shape: [t_test, 2]
+    return metrics, y_pred, predictive, y_pred_median, percentiles.T, hdis
