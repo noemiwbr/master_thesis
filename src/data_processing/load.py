@@ -351,12 +351,20 @@ def load_and_preprocess_data(
     print(f"Preprocessing done. X_train shape: {arrays['X_train'].shape}")
     print(f"Preprocessing done. X_test shape: {arrays['X_test'].shape}")
 
+    X_train_timestamps = df_train_X.index.get_level_values("time").unique()
+    X_test_timestamps = df_test_X.index.get_level_values("time").unique()
+
+    assert len(X_train_timestamps) == len(arrays["X_train"])
+    assert len(X_test_timestamps) == len(arrays["X_test"])
+
     return {
         **arrays,
         "sites_meta": scaling_result["sites_meta"],
         "feature_cols": feature_cols,
         "scaler_params": scaling_result["scaler_params"],
         "site_scaler_params": scaling_result["site_scaler_params"],
+        "X_train_timestamps": X_train_timestamps,
+        "X_test_timestamps": X_test_timestamps,
     }
 
 
@@ -678,6 +686,12 @@ def load_and_preprocess_forecast_data(
     print(f"Preprocessing done. X_train shape: {X_train.shape}")
     print(f"Preprocessing done. X_test shape: {X_test.shape}")
 
+    X_train_timestamps = windpower[train_mask].index
+    X_test_timestamps = windpower[test_mask].index
+
+    assert len(X_train_timestamps) == len(X_train)
+    assert len(X_test_timestamps) == len(X_test)
+
     # Return combined results
     return {
         "X_train": X_train,
@@ -689,6 +703,8 @@ def load_and_preprocess_forecast_data(
         "ensemble_members": ensemble_members,
         "scaler_params": scaler_params_nowcast,
         "site_scaler_params": site_scaler_params,
+        "X_train_timestamps": X_train_timestamps,
+        "X_test_timestamps": X_test_timestamps,
     }
 
 
