@@ -14,6 +14,7 @@ from models.build import build_model
 from training.train import train_torch, sample_numpyro, run_svi
 from training.evaluate import evaluate_model, evaluate_numpyro
 from jax import random
+import argparse
 
 # ============================================================================
 # CONFIGURATION
@@ -178,8 +179,18 @@ def run_single_experiment(exp_path: str) -> dict:
 def main():
     init_summary_file()
     jax.config.update("jax_num_cpu_devices", 6)  # I have 8 physical cores
+    parser = argparse.ArgumentParser(description="Run experiments")
 
-    for exp_path in EXPERIMENTS:
+    parser.add_argument(
+        "--exp_path",
+        nargs="*",
+        type=str,
+        default=EXPERIMENTS,
+        help="config file paths for experiments",
+    )
+    args = parser.parse_args()
+
+    for exp_path in args.exp_path:
         print("=" * 80)
         print(f"Starting: {exp_path}")
 
