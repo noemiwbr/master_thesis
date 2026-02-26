@@ -21,6 +21,7 @@ from data_processing.load import (
     load_weather_forecast_parquet,
     rename_met_forecast_columns,
 )
+import sys
 
 
 def save_checkpoint(
@@ -220,7 +221,7 @@ def run_inference_bnn(model, args, rng_key, X, Y):
         num_samples=args["num_samples"],
         num_chains=args["num_chains"],
         chain_method="parallel",
-        progress_bar=True,
+        progress_bar=sys.stdout.isatty(),
     )
     mcmc.run(
         rng_key,
