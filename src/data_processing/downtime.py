@@ -10,6 +10,7 @@ import pandas as pd
 from pqdm.processes import pqdm
 from sklearn.base import BaseEstimator, TransformerMixin
 from tqdm.auto import tqdm
+import sys
 
 
 def load_maintenance_events(
@@ -154,6 +155,7 @@ class CapacityFactorTransformer(BaseEstimator, TransformerMixin):
             self.calculate_available_capacity,
             n_jobs=int(np.ceil(os.cpu_count() * 0.75)),
             desc="Calculating available capacity across full time range",
+            disable=not sys.stdout.isatty(),
         )
         self.available = pd.DataFrame(available_dicts, index=date_range)
 
