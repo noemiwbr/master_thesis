@@ -141,9 +141,15 @@ def split_train_test_meta(
 import torch
 
 
-def to_tensor(data, cfg):
+def to_tensor(data):
     tensor_data = {}
-    keep = {"feature_cols", "scaler_params", "site_scaler_params"}
+    keep = {
+        "feature_cols",
+        "scaler_params",
+        "site_scaler_params",
+        "X_train_timestamps",
+        "X_test_timestamps",
+    }
 
     for key, value in data.items():
         if key in keep:

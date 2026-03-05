@@ -81,7 +81,6 @@ class WindPowerQuantile_weighted(nn.Module):
         self.monotonic_function = function_mapping[target]
 
         # Indices
-        print((self.quantiles == 0.5))
         self.mid_idx = (self.quantiles == 0.5).nonzero()[0].item()
         self.left_count = self.mid_idx
         self.right_count = Q - self.mid_idx - 1

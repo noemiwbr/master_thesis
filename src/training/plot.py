@@ -633,6 +633,7 @@ def plot_quantile_calibration(
     Y_true,
     Y_pred_quantiles,
     quantiles,
+    bz,
 ):
 
     Y_true = np.asarray(Y_true)
@@ -649,7 +650,7 @@ def plot_quantile_calibration(
     plt.plot([0, 1], [0, 1], "--", color="gray", label="Ideal")
     plt.xlabel("Nominal quantile τ")
     plt.ylabel("Empirical coverage")
-    plt.title("Calibration plot (quantile reliability)")
+    plt.title(f"Calibration plot ({bz})")
     plt.legend()
     plt.grid(True)
 
@@ -1130,6 +1131,7 @@ def plot_stacked_hdi_intervals(
 def plot_pit_histogram(
     preds,
     Y_true,
+    bz,
     bins=20,
     figsize=(5, 3),
     print_mean=True,
@@ -1162,7 +1164,7 @@ def plot_pit_histogram(
         alpha=0.8,
         color="#A6CEE3",
         edgecolor="white",
-        label="PIT histogram",
+        label=f"PIT histogram ({bz})",
     )
     plt.axhline(
         1.0,

@@ -64,15 +64,11 @@ def rmse_on_quantile(y_true, y_pred_q, quantiles, q=0.5):
     return rmse(y_true, y_pred_q[:, q_idx])
 
 
-def crps_from_quantiles_torch(y_true, y_pred, quantiles):
-    Y = y_true.detach().cpu().numpy()
-    Q = y_pred.detach().cpu().numpy()
-    taus = quantiles.detach().cpu().numpy()
-
+def crps_from_quantiles_torch(Y, Q, taus):
     total = 0.0
     n = Y.shape[0]
     for i in range(n):
-        total += crps_from_quantiles(float(Y[i]), Q[i], taus)
+        total += crps_from_quantiles(float(Y[i]), Q[i].numpy(), taus.numpy())
     return total / n
 
 
@@ -85,8 +81,8 @@ def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
     )
 
 
-def evaluate_model(model, data, quantiles, model_cfg, data_cfg, member=0):
-    data = to_tensor(data, data_cfg)
+def evaluate_model(model, data, quantiles, model_cfg, member=0):
+    data = to_tensor(data)
 
     y_true = (
         data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
