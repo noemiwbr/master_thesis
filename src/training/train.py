@@ -85,16 +85,16 @@ def train_loop(
 
 def train_torch(model, data, quantiles, model_cfg, data_cfg):
 
-    data = to_tensor(data, data_cfg)
+    data = to_tensor(data)
     X = data["X_train"]
     Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
     # Handle forecast vs nowcast (take member 0)
     if (
-        model_cfg.name == "WindPowerQuantile"
-        or model_cfg.name == "WindPowerModel_simple"
+        model_cfg.name
+        in ["WindPowerQuantile", "WindPowerModel_simple", "WindPowerQuantile_weighted"]
     ) and X.ndim == 4:
-        X = X[:, :, 0]  # [T, S, F]
+        X = X[:, :, 0]  # [T, S, F], TODO: chooses first member
 
     if model_cfg.name == "WindPowerQuantileEnsembles" and X.ndim != 4:
         raise ValueError(
