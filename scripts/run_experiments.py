@@ -21,10 +21,10 @@ import argparse
 # ============================================================================
 
 EXPERIMENTS = [
-    # "../configs/model/torch_model_quantile.yaml",
+    "../configs/model/torch_model_quantile.yaml",
     # "../configs/model/bnn_gen_model_nowcast_01.yaml",
     # "../configs/model/bnn_gen_model_nowcast_02.yaml",
-    "../configs/model/bnn_gen_model_nowcast_03.yaml",
+    # "../configs/model/bnn_gen_model_nowcast_03.yaml",
     # "../configs/model/bnn_gen_model_nowcast_04.yaml",
     # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
     # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
@@ -113,7 +113,6 @@ def run_single_experiment(exp_path: str) -> dict:
             data=data,
             quantiles=quantiles,
             model_cfg=model_cfg,
-            data_cfg=data_cfg,
         )
 
     elif model_cfg.backend == "numpyro":
