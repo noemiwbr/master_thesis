@@ -67,7 +67,11 @@ class WindPowerModel(nn.Module):
 
 class WindPowerQuantile_weighted(nn.Module):
     def __init__(
-        self, num_parks, num_features, quantiles=(0.025, 0.5, 0.975), target="gen"
+        self,
+        num_parks,
+        num_features,
+        quantiles=torch.tensor([0.025, 0.5, 0.975]),
+        target="gen",
     ):
         super().__init__()
         self.quantiles = quantiles
@@ -77,7 +81,7 @@ class WindPowerQuantile_weighted(nn.Module):
         assert 0.5 in quantiles, "Median must be included in the quantiles"
 
         assert target == "gen" or target == "cf", "Taget must be either gen or cf"
-        function_mapping = {"gen": nn.Softplus(), "cf": torch.sigmoid}
+        function_mapping = {"gen": nn.Softplus(), "cf": nn.Sigmoid()}
         self.monotonic_function = function_mapping[target]
 
         # Indices
@@ -87,15 +91,15 @@ class WindPowerQuantile_weighted(nn.Module):
 
         self.shared_mlp = nn.Sequential(
             nn.Linear(num_features, 32),
-            nn.ReLU(),
+            nn.Softplus(),
             nn.Linear(32, 16),
-            nn.ReLU(),
+            nn.Softplus(),
             nn.Linear(16, 8),
-            nn.ReLU(),
+            nn.Softplus(),
         )
 
         # raw logits -> softmax -> non-negative, sum to 1
-        self.agg_logits = nn.Parameter(torch.zeros(num_parks))
+        self.agg_logits = nn.Parameter(torch.ones(num_parks))
 
         # Quantile heads
         self.median_head = nn.Linear(8, 1)
@@ -369,21 +373,24 @@ def model_mw_gamma_emb(
 
 
 def model_mw_gamma_extended(
-    X, Y=None, nonlin=jax.nn.relu, eps=1e-6
+    X, Y=None, nonlin=jax.nn.softplus, eps=1e-6
 ):  # jax.nn.relu, jnp.tanh
     N, S, F = X.shape
 
-    w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F, 16]).to_event(2))
-    b1 = numpyro.sample("b1", dist.Normal(0.0, 1).expand([16]).to_event(1))
+    w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F, 32]).to_event(2))
+    b1 = numpyro.sample("b1", dist.Normal(0.0, 1).expand([32]).to_event(1))
 
-    w2 = numpyro.sample("w2", dist.Normal(0.0, 1).expand([16, 8]).to_event(2))
-    b2 = numpyro.sample("b2", dist.Normal(0.0, 1).expand([8]).to_event(1))
+    w2 = numpyro.sample("w2", dist.Normal(0.0, 1).expand([32, 16]).to_event(2))
+    b2 = numpyro.sample("b2", dist.Normal(0.0, 1).expand([16]).to_event(1))
 
-    w3mu = numpyro.sample("w3mu", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
-    b3mu = numpyro.sample("b3mu", dist.Normal(0.0, 1).expand([1]).to_event(1))
+    w3 = numpyro.sample("w3", dist.Normal(0.0, 1).expand([16, 8]).to_event(2))
+    b3 = numpyro.sample("b3", dist.Normal(0.0, 1).expand([8]).to_event(1))
 
-    w3k = numpyro.sample("w3k", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
-    b3k = numpyro.sample("b3k", dist.Normal(0.0, 1).expand([1]).to_event(1))
+    w4mu = numpyro.sample("w4mu", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b4mu = numpyro.sample("b4mu", dist.Normal(0.0, 1).expand([1]).to_event(1))
+
+    w4k = numpyro.sample("w4k", dist.Normal(0.0, 1).expand([8, 1]).to_event(2))
+    b4k = numpyro.sample("b4k", dist.Normal(0.0, 1).expand([1]).to_event(1))
 
     # Learned shared pooling weights over S
     agg_logits = numpyro.sample(
@@ -394,9 +401,10 @@ def model_mw_gamma_extended(
     # Forward pass
     z1 = nonlin(jnp.einsum("nsf,fh->nsh", X, w1) + b1)
     z2 = nonlin(jnp.einsum("nsh,hg->nsg", z1, w2) + b2)
+    z3 = nonlin(jnp.einsum("nsh,hg->nsg", z2, w3) + b3)
 
-    mu_raw = (jnp.einsum("nsg,gd->nsd", z2, w3mu) + b3mu).squeeze(-1)
-    alpha_raw = (jnp.einsum("nsg,gd->nsd", z2, w3k) + b3k).squeeze(-1)
+    mu_raw = (jnp.einsum("nsg,gd->nsd", z3, w4mu) + b4mu).squeeze(-1)
+    alpha_raw = (jnp.einsum("nsg,gd->nsd", z3, w4k) + b4k).squeeze(-1)
 
     # Weighted aggregation
     mu_agg = jnp.sum(mu_raw * agg_w[None, :], axis=1)  # (N,)
