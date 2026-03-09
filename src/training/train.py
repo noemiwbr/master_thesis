@@ -102,7 +102,10 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
             f"but got shape {tuple(X.shape)}"
         )
 
-    optimizer = optim.Adam(model.parameters(), lr=model_cfg.training.lr)
+    OPTIMIZER = {"adam": optim.Adam, "sgd": optim.SGD}
+    optimizer = OPTIMIZER[model_cfg.training.optimizer](
+        model.parameters(), lr=model_cfg.training.lr
+    )
 
     LOSS = {
         "quantile_loss_weighted": quantile_loss_weighted,
