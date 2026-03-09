@@ -87,22 +87,33 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
     y_true = (
         data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
     )
+    y_true_train = (
+        data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
+    )
 
     y_pred = predict(model, data, model_cfg, split="test", member=member)
+    y_pred_train = predict(model, data, model_cfg, split="train", member=member)
 
     metrics = {}
-    if model_cfg.name == "WindPowerModel_simple":  # no quantiles
-        metrics["rmse_median"] = rmse(y_true, y_pred)
-        metrics["coverage_025_975"] = 0
-        metrics["coverage_0_50"] = 0
-        metrics["crps"] = None
-    else:
-        metrics["rmse_median"] = rmse_on_quantile(y_true, y_pred, quantiles, q=0.5)
-        metrics["coverage_025_975"] = coverage(y_true, y_pred, quantiles=quantiles)
-        metrics["coverage_0_50"] = coverage(
-            y_true, y_pred, quantiles=quantiles, lower=0, upper=0.5
-        )
-        metrics["crps"] = crps_from_quantiles_torch(y_true, y_pred, quantiles)
+    for s, y_p, y_t in zip(
+        ["", "_train"], [y_pred, y_pred_train], [y_true, y_true_train]
+    ):
+        if model_cfg.name == "WindPowerModel_simple":  # no quantiles
+            metrics["rmse_median" + s] = rmse(y_t, y_p)
+            metrics["coverage_025_975" + s] = 0
+            metrics["coverage_0_50" + s] = 0
+            metrics["crps" + s] = None
+        else:
+            metrics["rmse_median" + s] = rmse_on_quantile(y_t, y_p, quantiles, q=0.5)
+            metrics["coverage_025_975" + s] = coverage(y_t, y_p, quantiles=quantiles)
+            metrics["coverage_0_50" + s] = coverage(
+                y_t, y_p, quantiles=quantiles, lower=0, upper=0.5
+            )
+            metrics["crps" + s] = crps_from_quantiles_torch(y_t, y_p, quantiles)
+    print("     rmse_median_train:", metrics["rmse_median_train"])
+    print("\n   crps_train:", metrics["crps_train"])
+    print("\n   coverage_025_975_train:", metrics["coverage_025_975_train"])
+    print("\n   coverage_0_50_train:", metrics["coverage_0_50_train"])
 
     return metrics, y_pred
 
