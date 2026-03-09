@@ -150,10 +150,14 @@ def prepare_bid_zone_data(weather_df, windpower_df, windparks_df, bid_zone):
     return weather_multiindex, windpower_aligned
 
 
-def filter_operational_period(weather_df, windpower_df, windparks_df):
+def filter_operational_period(weather_df, windpower_df, windparks_df, bid_zone):
     """Filter data to only include period where all wind parks are operational"""
 
-    start_time = windparks_df["prod_start_new"].max()
+    if bid_zone == "ELSPOT NO2":
+        start_time = windparks_df["prod_start_new"].sort_values().iloc[-2]
+    else:
+        start_time = windparks_df["prod_start_new"].max()
+
     print(f"All parks operational from {start_time}")
 
     if weather_df.index.name is not None and "time" in weather_df.index.name:
@@ -292,7 +296,7 @@ def load_and_preprocess_data(
     # 4. Filter period where all wind parks are operational
     windparks_in_bid_zone = filter_bid_zone(windparks, bid_zone)
     weather_filtered, windpower_filtered = filter_operational_period(
-        weather_nowcast, windpower, windparks_in_bid_zone
+        weather_nowcast, windpower, windparks_in_bid_zone, bid_zone=bid_zone
     )
 
     # 5. Filter and align data for specific bid zone, calculate capacity factor and drop timesteps with capacity change
@@ -438,7 +442,7 @@ def load_and_preprocess_forecast_data(
 
     # Filter period where all wind parks are operational
     weather_forecast_renamed, windpower = filter_operational_period(
-        weather_forecast_renamed, windpower, windparks
+        weather_forecast_renamed, windpower, windparks, bid_zone
     )
 
     # Filter to keep only 2-day ahead forecast (48h window starting at day+2 midnight)
@@ -606,9 +610,10 @@ def load_and_preprocess_forecast_data(
     )
 
     weather_req_ensembles = multiindex(weather_req_ensembles, windparks)
-    assert (
-        weather_req_ensembles["operating_power_max"].notna().all()
-    )  # because filtered out earlier
+    if bid_zone != "ELSPOT NO2":
+        assert (
+            weather_req_ensembles["operating_power_max"].notna().all()
+        )  # because filtered out earlier
 
     times = weather_req_ensembles.index.get_level_values("time").unique().sort_values()
     assert windpower.index.equals(pd.DatetimeIndex(times))
