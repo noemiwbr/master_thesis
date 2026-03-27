@@ -22,6 +22,8 @@ from data_processing.load import (
     rename_met_forecast_columns,
 )
 import sys
+import glob
+from datetime import datetime
 
 
 def save_checkpoint(
@@ -450,3 +452,32 @@ def compute_ensemble_variance_by_lead_time():
     )
 
     return var_by_feature, var_overall_features, overall_variance
+
+
+def extract_test_dates(num=30, data_path="../data/evaluation/", cut_off="2025-09-22"):
+    """
+    Evaluation dates (#num) for representative test set, cut_off determines until which date the data can serve as test set
+    """
+    extract_date_weather = lambda f: datetime.strptime(
+        f.split("/")[-1].split("_")[2][:8], "%Y%m%d"
+    )
+    extract_date_power = lambda f: datetime.strptime(
+        f.split("/")[-1].split("_")[-1].replace(".parquet", ""), "%Y%m%d"
+    )
+
+    files_weather = glob.glob(data_path + "/met_forecast_daily/*.csv")
+    files_power = glob.glob(data_path + "/wind_power/*.parquet")
+
+    dates_weather = [extract_date_weather(f) for f in files_weather]
+    dates_weather = sorted(dates_weather)
+    dates_power = [extract_date_power(f) for f in files_power]
+    dates_power = sorted(dates_power)
+
+    date_strings_weather = [d.strftime("%Y-%m-%d") for d in dates_weather]
+    date_strings_power = [d.strftime("%Y-%m-%d") for d in dates_power]
+
+    dates = [date for date in date_strings_weather if date in date_strings_power]
+
+    actual_test_set_idx = dates.index(cut_off)
+    valid_dates = dates[:actual_test_set_idx]
+    return valid_dates[-num:]
