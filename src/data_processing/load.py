@@ -286,6 +286,14 @@ def load_and_preprocess_data(
     windpower = load_windpower(f"{data_path}/wind_power_per_bidzone.parquet")
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
 
+    # Remove last added wind park in ELSPOT NO2 from data (ignore it in the training)
+    ignore_windpark = (
+        windparks[windparks["bidding_area"].str.contains("2", case=False)]
+        .sort_values("prod_start_new")
+        .iloc[-1]["substation_name"]
+    )
+    weather_nowcast = weather_nowcast[weather_nowcast["windpark"] != ignore_windpark]
+
     # 2. Add features (lagged wind speed, hour of the day)
     weather_nowcast = add_shifted_features(weather_nowcast)
 
@@ -418,6 +426,14 @@ def load_and_preprocess_forecast_data(
     )
     windpower = load_windpower(f"{data_path}/wind_power_per_bidzone.parquet")
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
+
+    # Remove last added wind park in ELSPOT NO2 from data (ignore it in the training)
+    ignore_windpark = (
+        windparks[windparks["bidding_area"].str.contains("2", case=False)]
+        .sort_values("prod_start_new")
+        .iloc[-1]["substation_name"]
+    )
+    weather_forecast = weather_forecast[weather_forecast["sid"] != ignore_windpark]
 
     scaler_params_nowcast = load_scaler_params(
         bid_zone=bid_zone.replace(" ", "_"), dataset="nowcast"
@@ -971,6 +987,14 @@ def load_evaluation_data(
 
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
 
+    # Remove last added wind park in ELSPOT NO2 from data (ignore it in the training)
+    ignore_windpark = (
+        windparks[windparks["bidding_area"].str.contains("2", case=False)]
+        .sort_values("prod_start_new")
+        .iloc[-1]["substation_name"]
+    )
+    weather_data = weather_data[weather_data["windpark"] != ignore_windpark]
+
     # 4. Filter and align data for specific bid zone, calculate capacity factor
     weather_multiindex, windpower_with_full_capacity = prepare_bid_zone_data(
         weather_data, windpower, windparks, bid_zone
@@ -1049,6 +1073,11 @@ def load_evaluation_forecast_data(
         ensemble_members = list(range(15))
 
     windparks = load_windparks(f"{data_path}/windparks_bidzone.csv")
+    ignore_windpark = (
+        windparks[windparks["bidding_area"].str.contains("2", case=False)]
+        .sort_values("prod_start_new")
+        .iloc[-1]["substation_name"]
+    )
     windparks = filter_bid_zone(windparks, bid_zone)
     weather = []
     power = []
@@ -1107,6 +1136,10 @@ def load_evaluation_forecast_data(
 
             # Merge wind park metadata into weather
             weather_forecast = merge_metadata(weather_forecast, windparks)
+            # Remove last added wind park in ELSPOT NO2 from data (ignore it in the training)
+            weather_forecast = weather_forecast[
+                weather_forecast["windpark"] != ignore_windpark
+            ]
 
             sites_meta_unscaled = (
                 weather_forecast[site_meta_cols]
@@ -1185,11 +1218,18 @@ def load_evaluation_forecast_data(
             weather_forecast_transformed = weather_forecast_transformed.dropna(
                 subset=shift_cols
             )
+            common_index = weather_forecast_transformed.index.intersection(
+                windpower.index
+            )
+
+            weather_forecast_transformed = weather_forecast_transformed.loc[
+                common_index
+            ]
+            windpower = windpower.loc[common_index]
+
             weather_forecast_transformed = multiindex(
                 weather_forecast_transformed, windparks
             )
-            # print("weather single date: ", weather_forecast_transformed.head())
-            # print("windpower single date: ", windpower.head())
 
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
