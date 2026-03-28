@@ -15,7 +15,7 @@ def plot_qr_hdi_prediction(
     Y_true,
     conf_interval,
     medians,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
@@ -31,7 +31,7 @@ def plot_qr_hdi_prediction(
     df_full = df.reindex(full_index)
 
     if timestamps is None:
-        timestamps = np.arange(n_plot)
+        timestamps = np.arange(plot_interval[1] - plot_interval[0])
 
     fig, axes = plt.subplots(
         nrows=3,
@@ -44,8 +44,8 @@ def plot_qr_hdi_prediction(
     # Top plot
     ax = axes[0]
     ax.plot(
-        df_full.index[:n_plot],
-        df_full["Y_true"][:n_plot],
+        df_full.index[slice(*plot_interval)],
+        df_full["Y_true"][slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -53,17 +53,17 @@ def plot_qr_hdi_prediction(
     )
 
     ax.fill_between(
-        df_full.index[:n_plot],
-        df_full["hdi_lower"][:n_plot],
-        df_full["hdi_upper"][:n_plot],
+        df_full.index[slice(*plot_interval)],
+        df_full["hdi_lower"][slice(*plot_interval)],
+        df_full["hdi_upper"][slice(*plot_interval)],
         color="#A6CEE3",
         alpha=0.5,
         label=f"{int(cred_mass * 100)}% credible interval",
     )
 
     ax.plot(
-        df_full.index[:n_plot],
-        df_full["median"][:n_plot],
+        df_full.index[slice(*plot_interval)],
+        df_full["median"][slice(*plot_interval)],
         color="red",
         label="Posterior median",
         lw=2,
@@ -76,10 +76,16 @@ def plot_qr_hdi_prediction(
     ax.legend()
 
     # Bottom panel
-    width = df_full["hdi_upper"][:n_plot] - df_full["hdi_lower"][:n_plot]
-    width_min_max = (df_full["median"][:n_plot] - df_full["hdi_lower"][:n_plot]) / width
+    width = (
+        df_full["hdi_upper"][slice(*plot_interval)]
+        - df_full["hdi_lower"][slice(*plot_interval)]
+    )
+    width_min_max = (
+        df_full["median"][slice(*plot_interval)]
+        - df_full["hdi_lower"][slice(*plot_interval)]
+    ) / width
     ax2 = axes[1]
-    ax2.plot(df_full.index[:n_plot], width_min_max, color="#A6CEE3")
+    ax2.plot(df_full.index[slice(*plot_interval)], width_min_max, color="#A6CEE3")
     ax2.set(
         xlabel="Time",
         ylabel="Interval width",
@@ -87,7 +93,7 @@ def plot_qr_hdi_prediction(
     )
 
     ax3 = axes[2]
-    ax3.plot(df_full.index[:n_plot], width, color="#A6CEE3")
+    ax3.plot(df_full.index[slice(*plot_interval)], width, color="#A6CEE3")
     ax3.set(
         xlabel="Time",
         ylabel="Interval width",
@@ -101,13 +107,15 @@ def plot_qr_hdi_prediction_ensemble_combined(
     Y_true,
     conf_interval,
     medians,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
     if timestamps is None:
-        timestamps = np.arange(n_plot)
+        timestamps = np.arange(plot_interval[0], plot_interval[1])
+    else:
+        timestamps = timestamps[slice(*plot_interval)]
 
     fig, ax = plt.subplots(
         nrows=1,
@@ -119,7 +127,7 @@ def plot_qr_hdi_prediction_ensemble_combined(
     # Top plot
     ax.plot(
         timestamps,
-        Y_true[:n_plot],
+        Y_true[slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -128,15 +136,15 @@ def plot_qr_hdi_prediction_ensemble_combined(
 
     ax.fill_between(
         timestamps,
-        conf_interval[1][:n_plot, 0],
-        conf_interval[1][:n_plot, 1],
+        conf_interval[1][slice(*plot_interval), 0],  # [:n_plot, 0],
+        conf_interval[1][slice(*plot_interval), 1],  # [:n_plot, 1],
         color="lightblue",
         alpha=0.5,
         label=f"{int(cred_mass * 100)}% credible interval member 0",
     )
     ax.plot(
         timestamps,
-        medians[1][:n_plot],
+        medians[1][slice(*plot_interval)],
         color="red",
         label="Posterior median member 0",
         lw=2,
@@ -144,15 +152,15 @@ def plot_qr_hdi_prediction_ensemble_combined(
 
     ax.fill_between(
         timestamps,
-        conf_interval[0][:n_plot, 0],
-        conf_interval[0][:n_plot, 1],
+        conf_interval[0][slice(*plot_interval), 0],  # [:n_plot, 0],
+        conf_interval[0][slice(*plot_interval), 1],  # [:n_plot, 1],
         color="blue",
         alpha=0.1,
         label=f"{int(cred_mass * 100)}% credible interval across-members",
     )
     ax.plot(
         timestamps,
-        medians[0][:n_plot],
+        medians[0][slice(*plot_interval)],
         color="blue",
         label="Posterior median across-members",
         lw=2,
@@ -171,13 +179,13 @@ def plot_qr_hdi_prediction_ensemble_combined(
 def plot_qr_hdi_prediction_ensemble(
     Y_true,
     ensemble_results,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
     if timestamps is None:
-        timestamps = np.arange(n_plot)
+        timestamps = np.arange(plot_interval[0], plot_interval[1])
 
     fig, axes = plt.subplots(
         nrows=3,
@@ -190,8 +198,8 @@ def plot_qr_hdi_prediction_ensemble(
     # Top plot
     ax = axes[0]
     ax.plot(
-        timestamps[:n_plot],
-        Y_true[:n_plot],
+        timestamps[slice(*plot_interval)],
+        Y_true[slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -199,9 +207,9 @@ def plot_qr_hdi_prediction_ensemble(
     )
 
     ax.fill_between(
-        timestamps[:n_plot],
-        ensemble_results["hdi_lower_0"][:n_plot],
-        ensemble_results["hdi_upper_0"][:n_plot],
+        timestamps[slice(*plot_interval)],
+        ensemble_results["hdi_lower_0"][slice(*plot_interval)],
+        ensemble_results["hdi_upper_0"][slice(*plot_interval)],
         color="#A6CEE3",
         alpha=0.5,
         label=f"{int(cred_mass * 100)}% credible interval",
@@ -217,8 +225,8 @@ def plot_qr_hdi_prediction_ensemble(
     if "forecast" in title:
         for member in range(0, 15):
             ax.plot(
-                timestamps[:n_plot],
-                ensemble_results[f"median_{member}"][:n_plot],
+                timestamps[slice(*plot_interval)],
+                ensemble_results[f"median_{member}"][slice(*plot_interval)],
                 color="orange",
                 lw=0.5,
                 alpha=0.8,
@@ -228,19 +236,19 @@ def plot_qr_hdi_prediction_ensemble(
 
     for c, k in zip(colors, keys):
         ax.fill_between(
-            timestamps[:n_plot],
-            ensemble_results["mean_" + k][:n_plot]
-            + ensemble_results["std_" + k][:n_plot],
-            ensemble_results["mean_" + k][:n_plot]
-            - ensemble_results["std_" + k][:n_plot],
+            timestamps[slice(*plot_interval)],
+            ensemble_results["mean_" + k][slice(*plot_interval)]
+            + ensemble_results["std_" + k][slice(*plot_interval)],
+            ensemble_results["mean_" + k][slice(*plot_interval)]
+            - ensemble_results["std_" + k][slice(*plot_interval)],
             color=c,
             alpha=0.1,
             label=f"Std of 95% CI (ensemble members)",
         )
 
     ax.plot(
-        timestamps[:n_plot],
-        ensemble_results["median_0"][:n_plot],
+        timestamps[slice(*plot_interval)],
+        ensemble_results["median_0"][slice(*plot_interval)],
         color="red",
         label="Posterior median",
         lw=2,
@@ -252,14 +260,15 @@ def plot_qr_hdi_prediction_ensemble(
 
     # Bottom panel
     width = (
-        ensemble_results["hdi_upper_0"][:n_plot]
-        - ensemble_results["hdi_lower_0"][:n_plot]
+        ensemble_results["hdi_upper_0"][slice(*plot_interval)]
+        - ensemble_results["hdi_lower_0"][slice(*plot_interval)]
     )
     width_min_max = (
-        ensemble_results["median_0"][:n_plot] - ensemble_results["hdi_lower_0"][:n_plot]
+        ensemble_results["median_0"][slice(*plot_interval)]
+        - ensemble_results["hdi_lower_0"][slice(*plot_interval)]
     ) / width
     ax2 = axes[1]
-    ax2.plot(timestamps[:n_plot], width_min_max, color="#A6CEE3")
+    ax2.plot(timestamps[slice(*plot_interval)], width_min_max, color="#A6CEE3")
     ax2.set(
         xlabel="Time",
         ylabel="Interval width",
@@ -267,7 +276,7 @@ def plot_qr_hdi_prediction_ensemble(
     )
 
     ax3 = axes[2]
-    ax3.plot(timestamps[:n_plot], width, color="#A6CEE3")
+    ax3.plot(timestamps[slice(*plot_interval)], width, color="#A6CEE3")
     ax3.set(
         xlabel="Time",
         ylabel="Interval width",
@@ -280,15 +289,15 @@ def plot_qr_hdi_prediction_ensemble(
 def plot_qr_hdi_prediction_ensemble_outline(
     Y_true,
     ensemble_results,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
     if timestamps is None:
-        x = np.arange(n_plot)
+        x = np.arange(plot_interval[0], plot_interval[1])
     else:
-        x = timestamps[:n_plot]
+        x = timestamps[slice(*plot_interval)]
 
     fig, ax = plt.subplots(
         nrows=1,
@@ -307,8 +316,8 @@ def plot_qr_hdi_prediction_ensemble_outline(
             alpha = 0.5 if member == 0 else 0.2
             ax.fill_between(
                 x,
-                ensemble_results[f"hdi_lower_{member}"][:n_plot],
-                ensemble_results[f"hdi_upper_{member}"][:n_plot],
+                ensemble_results[f"hdi_lower_{member}"][slice(*plot_interval)],
+                ensemble_results[f"hdi_upper_{member}"][slice(*plot_interval)],
                 color="lightblue",  # if member != 0 else "blue",
                 alpha=1 / 15 if member != 0 else 1,
                 label=f"95% HDI member-wise",
@@ -316,7 +325,7 @@ def plot_qr_hdi_prediction_ensemble_outline(
 
             ax.plot(
                 x,
-                ensemble_results[f"median_{member}"][:n_plot],
+                ensemble_results[f"median_{member}"][slice(*plot_interval)],
                 color="red",
                 lw=2 if member == 0 else 0.8,
                 alpha=alpha,
@@ -334,7 +343,7 @@ def plot_qr_hdi_prediction_ensemble_outline(
         max_vals = ensemble_results[hdi_upper_cols].max(axis=1)
         ax.plot(
             x,
-            min_vals[:n_plot],
+            min_vals[slice(*plot_interval)],
             color="lightblue",
             lw=1,
             alpha=1,
@@ -342,7 +351,7 @@ def plot_qr_hdi_prediction_ensemble_outline(
         )
         ax.plot(
             x,
-            max_vals[:n_plot],
+            max_vals[slice(*plot_interval)],
             color="lightblue",
             lw=1,
             alpha=1,
@@ -350,7 +359,7 @@ def plot_qr_hdi_prediction_ensemble_outline(
 
     ax.plot(
         x,
-        Y_true[:n_plot],
+        Y_true[slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -368,7 +377,7 @@ def plot_qr_hdi_prediction_ensemble_outline(
 def plot_qr_hdi_prediction_ensemble_std(
     Y_true,
     ensemble_results,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
@@ -400,8 +409,8 @@ def plot_qr_hdi_prediction_ensemble_std(
             alpha = 0.5 if member == 0 else 0.2
 
             ax.plot(
-                ens_df_full.index[:n_plot],
-                ens_df_full[f"hdi_lower_{member}"][:n_plot],
+                ens_df_full.index[slice(*plot_interval)],
+                ens_df_full[f"hdi_lower_{member}"][slice(*plot_interval)],
                 color="blue",
                 lw=1.5 if member == 0 else 1,
                 alpha=alpha,
@@ -409,16 +418,16 @@ def plot_qr_hdi_prediction_ensemble_std(
                 label=f"95% HDI member-wise",
             )
             ax.plot(
-                ens_df_full.index[:n_plot],
-                ens_df_full[f"hdi_upper_{member}"][:n_plot],
+                ens_df_full.index[slice(*plot_interval)],
+                ens_df_full[f"hdi_upper_{member}"][slice(*plot_interval)],
                 color="blue",
                 lw=1.5 if member == 0 else 1,
                 alpha=alpha,
                 linestyle="-",
             )
             ax.plot(
-                ens_df_full.index[:n_plot],
-                ens_df_full[f"median_{member}"][:n_plot],
+                ens_df_full.index[slice(*plot_interval)],
+                ens_df_full[f"median_{member}"][slice(*plot_interval)],
                 color="red",
                 lw=2 if member == 0 else 0.8,
                 alpha=alpha,
@@ -427,8 +436,8 @@ def plot_qr_hdi_prediction_ensemble_std(
             )
 
     ax.plot(
-        ens_df_full.index[:n_plot],
-        ens_df_full["Y_true"][:n_plot],
+        ens_df_full.index[slice(*plot_interval)],
+        ens_df_full["Y_true"][slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -446,15 +455,15 @@ def plot_qr_hdi_prediction_ensemble_std(
 def plot_qr_hdi_prediction_ensemble_std_bands(
     Y_true,
     ensemble_results,
-    n_plot=1000,
+    plot_interval=[0, 1000],
     cred_mass=0.95,
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
     if timestamps is None:
-        x = np.arange(n_plot)
+        x = np.arange(plot_interval[0], plot_interval[1])
     else:
-        x = timestamps[:n_plot]
+        x = timestamps[slice(*plot_interval)]
 
     fig, ax = plt.subplots(
         nrows=1,
@@ -477,7 +486,7 @@ def plot_qr_hdi_prediction_ensemble_std_bands(
 
             ax.plot(
                 x,
-                ensemble_results[f"hdi_lower_{member}"][:n_plot],
+                ensemble_results[f"hdi_lower_{member}"][slice(*plot_interval)],
                 color="blue",
                 lw=1.5 if member == 0 else 1,
                 alpha=alpha,
@@ -486,7 +495,7 @@ def plot_qr_hdi_prediction_ensemble_std_bands(
             )
             ax.plot(
                 x,
-                ensemble_results[f"hdi_upper_{member}"][:n_plot],
+                ensemble_results[f"hdi_upper_{member}"][slice(*plot_interval)],
                 color="blue",
                 lw=1.5 if member == 0 else 1,
                 alpha=alpha,
@@ -495,7 +504,7 @@ def plot_qr_hdi_prediction_ensemble_std_bands(
             )
             ax.plot(
                 x,
-                ensemble_results[f"median_{member}"][:n_plot],
+                ensemble_results[f"median_{member}"][slice(*plot_interval)],
                 color="red",
                 lw=2 if member == 0 else 0.8,
                 alpha=alpha,
@@ -507,10 +516,10 @@ def plot_qr_hdi_prediction_ensemble_std_bands(
     for c, k, a in zip(colors, keys, alphas):
         ax.fill_between(
             x,
-            ensemble_results["mean_" + k][:n_plot]
-            + ensemble_results["std_" + k][:n_plot],
-            ensemble_results["mean_" + k][:n_plot]
-            - ensemble_results["std_" + k][:n_plot],
+            ensemble_results["mean_" + k][slice(*plot_interval)]
+            + ensemble_results["std_" + k][slice(*plot_interval)],
+            ensemble_results["mean_" + k][slice(*plot_interval)]
+            - ensemble_results["std_" + k][slice(*plot_interval)],
             color=c,
             alpha=a,
             label=f"mean and std of member's 95% HDI",
@@ -518,7 +527,7 @@ def plot_qr_hdi_prediction_ensemble_std_bands(
 
     ax.plot(
         x,
-        Y_true[:n_plot],
+        Y_true[slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -561,7 +570,9 @@ import torch
 from numpyro.infer import Predictive
 
 
-def plot_bnn_gamma_combined(checkpoint, model, data, data_cfg, n_plot, split="test"):
+def plot_bnn_gamma_combined(
+    checkpoint, model, data, data_cfg, plot_interval, split="test"
+):
 
     # TODO: fix naming of data splits
     split_names = {"test": "validation", "train": "train", "eval": "test"}
@@ -599,7 +610,7 @@ def plot_bnn_gamma_combined(checkpoint, model, data, data_cfg, n_plot, split="te
     median_0 = np.percentile(pp_samples_0, 50, axis=0)
 
     if f"X_{split}_timestamps" in data.keys():
-        timestamps = data[f"X_{split}_timestamps"][:n_plot]
+        timestamps = data[f"X_{split}_timestamps"][slice(*plot_interval)]
     elif "index" in data.keys():
         timestamps = data["index"]
     else:
@@ -609,7 +620,7 @@ def plot_bnn_gamma_combined(checkpoint, model, data, data_cfg, n_plot, split="te
         Y_true=data[f"Y_{split}_gen"],
         conf_interval=[hdi, hdi_0],
         medians=[median, median_0],
-        n_plot=n_plot,
+        plot_interval=plot_interval,
         title=f"{model_cfg.name} {model_cfg.data.bid_zone} {data_cfg.dataset} {split_names[split]}",
         timestamps=timestamps,
     )
