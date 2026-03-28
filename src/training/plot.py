@@ -20,18 +20,15 @@ def plot_qr_hdi_prediction(
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
+
     df = pd.DataFrame(
         np.stack([Y_true, conf_interval[:, 0], conf_interval[:, 1], medians]).T,
         index=timestamps,
         columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
     )
     full_index = pd.date_range(df.index.min(), df.index.max(), freq="h")
-
     # Reindex and fill missing timestamps with NaN
     df_full = df.reindex(full_index)
-
-    if timestamps is None:
-        timestamps = np.arange(plot_interval[1] - plot_interval[0])
 
     fig, axes = plt.subplots(
         nrows=3,
@@ -112,10 +109,28 @@ def plot_qr_hdi_prediction_ensemble_combined(
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
-    if timestamps is None:
-        timestamps = np.arange(plot_interval[0], plot_interval[1])
-    else:
-        timestamps = timestamps[slice(*plot_interval)]
+
+    conf_interval_all, conf_interval_0 = conf_interval
+    medians_all, medians_0 = medians
+
+    # Convert to dataframes, to reindex and fill missing timestamps with NaN for plotting
+    df_0 = pd.DataFrame(
+        np.stack([Y_true, conf_interval_0[:, 0], conf_interval_0[:, 1], medians_0]).T,
+        index=timestamps,
+        columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
+    )
+    full_index_0 = pd.date_range(df_0.index.min(), df_0.index.max(), freq="h")
+    df_full_0 = df_0.reindex(full_index_0)
+
+    df_all = pd.DataFrame(
+        np.stack(
+            [Y_true, conf_interval_all[:, 0], conf_interval_all[:, 1], medians_all]
+        ).T,
+        index=timestamps,
+        columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
+    )
+    full_index_all = pd.date_range(df_all.index.min(), df_all.index.max(), freq="h")
+    df_full_all = df_all.reindex(full_index_all)
 
     fig, ax = plt.subplots(
         nrows=1,
@@ -126,8 +141,8 @@ def plot_qr_hdi_prediction_ensemble_combined(
 
     # Top plot
     ax.plot(
-        timestamps,
-        Y_true[slice(*plot_interval)],
+        df_full_0.index[slice(*plot_interval)],
+        df_full_0["Y_true"][slice(*plot_interval)],
         ".",
         color="black",
         label="Observed data",
@@ -135,32 +150,32 @@ def plot_qr_hdi_prediction_ensemble_combined(
     )
 
     ax.fill_between(
-        timestamps,
-        conf_interval[1][slice(*plot_interval), 0],  # [:n_plot, 0],
-        conf_interval[1][slice(*plot_interval), 1],  # [:n_plot, 1],
+        df_full_0.index[slice(*plot_interval)],
+        df_full_0["hdi_lower"][slice(*plot_interval)],
+        df_full_0["hdi_upper"][slice(*plot_interval)],
         color="lightblue",
         alpha=0.5,
         label=f"{int(cred_mass * 100)}% credible interval member 0",
     )
     ax.plot(
-        timestamps,
-        medians[1][slice(*plot_interval)],
+        df_full_0.index[slice(*plot_interval)],
+        df_full_0["median"][slice(*plot_interval)],
         color="red",
         label="Posterior median member 0",
         lw=2,
     )
 
     ax.fill_between(
-        timestamps,
-        conf_interval[0][slice(*plot_interval), 0],  # [:n_plot, 0],
-        conf_interval[0][slice(*plot_interval), 1],  # [:n_plot, 1],
+        df_full_all.index[slice(*plot_interval)],
+        df_full_all["hdi_lower"][slice(*plot_interval)],
+        df_full_all["hdi_upper"][slice(*plot_interval)],
         color="blue",
         alpha=0.1,
         label=f"{int(cred_mass * 100)}% credible interval across-members",
     )
     ax.plot(
-        timestamps,
-        medians[0][slice(*plot_interval)],
+        df_full_all.index[slice(*plot_interval)],
+        df_full_all["median"][slice(*plot_interval)],
         color="blue",
         label="Posterior median across-members",
         lw=2,
