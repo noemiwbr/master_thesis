@@ -11,6 +11,7 @@ from models.model import (
     model_cf_beta,
     model_mw_gamma_extended,
     model_mw_gamma_extended_site1,
+    model_mw_normal_extended,
 )
 import numpy as np
 
@@ -27,6 +28,7 @@ NUMPYRO_MODELS = {
     "model_cf_beta": model_cf_beta,
     "model_mw_gamma_extended": model_mw_gamma_extended,
     "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
+    "model_mw_normal_extended": model_mw_normal_extended,
 }
 
 
@@ -61,8 +63,12 @@ def build_torch_model(model_cfg, data):
             return model_cls(
                 num_features=X.shape[-1],
             )
+
         if model_cfg.params.quantiles is None:
-            quantiles = np.linspace(0, 1, 51)
+            if model_cfg.params.num_quantiles is not None:
+                quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
+            else:
+                quantiles = np.linspace(0, 1, 51)
         else:
             quantiles = tuple(model_cfg.params.quantiles)
 

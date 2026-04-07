@@ -20,6 +20,7 @@ from models.model import (
     model_cf_beta,
     model_mw_gamma_extended,
     model_mw_gamma_extended_site1,
+    model_mw_normal_extended,
 )
 import torch
 import re
@@ -127,16 +128,21 @@ def evaluate_numpyro(
     svi_params=None,
     guide=None,
     member=0,
+    max_scaling=1,
 ):
 
     X_test = data["X_test"]
     X_train = data["X_train"]
 
     Y_test = (
-        data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+        data["Y_test_gen"] * max_scaling
+        if model_cfg.params.target == "gen"
+        else data["Y_test_cf"]
     )
     Y_train = (
-        data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
+        data["Y_train_gen"] * max_scaling
+        if model_cfg.params.target == "gen"
+        else data["Y_train_cf"]
     )
 
     # Handle forecast vs nowcast
@@ -177,12 +183,12 @@ def evaluate_numpyro(
 
     # Handle CF prediction, transform it back to generation prediction
     y_pred = (
-        pp_samples["Y"]
+        pp_samples["Y"] * max_scaling
         if model_cfg.params.target == "gen"
         else pp_samples["Y"] * data["Y_test_aval"]
     )
     y_pred_train = (
-        pp_samples_train["Y"]
+        pp_samples_train["Y"] * max_scaling
         if model_cfg.params.target == "gen"
         else pp_samples_train["Y"] * data["Y_train_aval"]
     )
@@ -241,6 +247,7 @@ def test_BNN(file_name, eval_data, member=0):
         "model_mw_gamma_extended": model_mw_gamma_extended,
         "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
         "model_cf_logitnormal": model_cf_logitnormal,
+        "model_mw_normal_extended": model_mw_normal_extended,
     }
 
     model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
@@ -324,6 +331,16 @@ def test_QR(
             continue
 
         loaded_model, checkpoint_data = load_torch_model(file_name=file_name)
+        model_cfg = checkpoint_data["model_cfg"]
+
+        if model_cfg.params.quantiles is None:
+            if model_cfg.params.num_quantiles is not None:
+                quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
+            else:
+                quantiles = np.linspace(0, 1, 51)
+        else:
+            quantiles = tuple(model_cfg.params.quantiles)
+        print(quantiles)
 
         loaded_model.eval()
         with torch.no_grad():
@@ -335,10 +352,9 @@ def test_QR(
                     y_sum_pred *= eval_data["Y_eval_aval"][:, None]
                 Y_pred = y_sum_pred.numpy()
 
-                taus = np.linspace(0, 1, 51)
                 hdis = np.array(
                     [
-                        QuantileDistribution(taus, Y_pred[i]).hdi(
+                        QuantileDistribution(quantiles, Y_pred[i]).hdi(
                             cred_mass=0.95, n_samples=5000
                         )
                         for i in range(eval_data["Y_eval_gen"].shape[0])
@@ -347,7 +363,7 @@ def test_QR(
 
                 medians = np.array(
                     [
-                        QuantileDistribution(taus, Y_pred[i]).icdf(0.5)
+                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.5)
                         for i in range(eval_data["Y_eval_gen"].shape[0])
                     ]
                 )
@@ -371,7 +387,7 @@ def test_QR(
 def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_cfg):
 
     X_test = data["X_train"]
-    Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+    Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
     # Handle forecast vs nowcast
     if (
@@ -402,6 +418,7 @@ def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_c
     metrics = {}
 
     metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
+    metrics["crps"] = ps.crps_ensemble(Y, y_pred, axis=0).mean()
     metrics["coverage_025_975"] = ((Y >= percentiles[0]) & (Y <= percentiles[1])).mean()
     metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
 
