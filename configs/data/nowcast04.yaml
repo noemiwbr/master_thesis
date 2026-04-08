@@ -1,0 +1,5 @@
+dataset: nowcast
+bid_zone: ELSPOT NO4
+tensors: True
+
+split_time: 2025-01-01 00:00:00
