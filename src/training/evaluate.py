@@ -25,7 +25,6 @@ from models.model import (
 import torch
 import re
 
-from skforecast.metrics import crps_from_quantiles
 import properscoring as ps
 from data_processing.utils import QuantileDistribution
 
@@ -65,14 +64,7 @@ def rmse_on_quantile(y_true, y_pred_q, quantiles, q=0.5):
     return rmse(y_true, y_pred_q[:, q_idx])
 
 
-def crps_from_quantiles_torch(Y, Q, taus):
-    total = 0.0
-    n = Y.shape[0]
-    for i in range(n):
-        total += crps_from_quantiles(float(Y[i]), Q[i].numpy(), taus.numpy())
-    return total / n
-
-
+# TODO: fix, takes closest quantile if the requested doesn't exist
 def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
     ql = torch.argmin(torch.abs(quantiles - lower))
     qu = torch.argmin(torch.abs(quantiles - upper))
@@ -110,7 +102,7 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
             metrics["coverage_0_50" + s] = coverage(
                 y_t, y_p, quantiles=quantiles, lower=0, upper=0.5
             )
-            metrics["crps" + s] = crps_from_quantiles_torch(y_t, y_p, quantiles)
+            metrics["crps" + s] = crps_from_quantiles(y_t, y_p, quantiles)
     print("     rmse_median_train:", metrics["rmse_median_train"])
     print("\n   crps_train:", metrics["crps_train"])
     print("\n   coverage_025_975_train:", metrics["coverage_025_975_train"])
@@ -340,7 +332,6 @@ def test_QR(
                 quantiles = np.linspace(0, 1, 51)
         else:
             quantiles = tuple(model_cfg.params.quantiles)
-        print(quantiles)
 
         loaded_model.eval()
         with torch.no_grad():
@@ -360,6 +351,18 @@ def test_QR(
                         for i in range(eval_data["Y_eval_gen"].shape[0])
                     ]
                 )
+                lower = np.array(
+                    [
+                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.025)
+                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                    ]
+                )
+                upper = np.array(
+                    [
+                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.975)
+                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                    ]
+                )
 
                 medians = np.array(
                     [
@@ -368,8 +371,10 @@ def test_QR(
                     ]
                 )
 
+                # TODO: not HDI but percentiles, is naming important of forecast columns?
                 forecast_extended[i][["median", "hdi_lower", "hdi_upper"]] = (
-                    np.column_stack([medians, hdis[:, 0], hdis[:, 1]])
+                    # np.column_stack([medians, hdis[:, 0], hdis[:, 1]])
+                    np.column_stack([medians, lower, upper])
                 )
 
             else:  # TODO catch more models here
@@ -424,3 +429,22 @@ def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_c
 
     # Percentiles shape: [t_test, 2]
     return metrics, y_pred, predictive, y_pred_median, percentiles.T, hdis
+
+
+def crps_from_quantiles(Y, Q, taus):
+    """
+    Y:    [N,]
+    Q:    [N,Q]
+    taus: [Q,]
+    """
+    Y = Y.unsqueeze(1)  # [N, 1]
+
+    diff = Y - Q  # [N, Q]
+
+    # Pinball loss
+    loss = torch.maximum(taus * diff, (taus - 1) * diff)  # [N,Q]
+
+    # Integration over quantiles
+    crps = 2 * torch.trapezoid(loss, taus, dim=1)  # [N,]
+
+    return crps.mean()

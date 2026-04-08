@@ -9,6 +9,7 @@ from scipy.stats import percentileofscore
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from data_processing.utils import QuantileDistribution
 
 
 def plot_qr_hdi_prediction(
@@ -100,6 +101,62 @@ def plot_qr_hdi_prediction(
     return fig, axes
 
 
+def plot_qr_hdi_prediction_simple(
+    Y_true,
+    conf_interval,
+    medians,
+    plot_interval=[0, 1000],
+    cred_mass=0.95,
+    title="QR Power Generation Prediction",
+    timestamps=None,
+):
+
+    df = pd.DataFrame(
+        np.stack([Y_true, conf_interval[:, 0], conf_interval[:, 1], medians]).T,
+        index=timestamps,
+        columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
+    )
+    full_index = pd.date_range(df.index.min(), df.index.max(), freq="h")
+    # Reindex and fill missing timestamps with NaN
+    df_full = df.reindex(full_index)
+
+    plt.figure(
+        figsize=(15, 4),
+        constrained_layout=True,
+    )
+
+    # Top plot
+    plt.plot(
+        df_full.index[slice(*plot_interval)],
+        df_full["Y_true"][slice(*plot_interval)],
+        ".",
+        color="black",
+        label="Observed data",
+        markersize=4,
+    )
+
+    plt.fill_between(
+        df_full.index[slice(*plot_interval)],
+        df_full["hdi_lower"][slice(*plot_interval)],
+        df_full["hdi_upper"][slice(*plot_interval)],
+        color="#A6CEE3",
+        alpha=0.5,
+        label=f"{int(cred_mass * 100)}% credible interval",
+    )
+
+    plt.plot(
+        df_full.index[slice(*plot_interval)],
+        df_full["median"][slice(*plot_interval)],
+        color="red",
+        label="Posterior median",
+        lw=2,
+    )
+
+    plt.ylabel("Total power")
+    plt.title(title)
+    plt.legend()
+
+
 def plot_qr_hdi_prediction_ensemble_combined(
     Y_true,
     conf_interval,
@@ -134,7 +191,7 @@ def plot_qr_hdi_prediction_ensemble_combined(
 
     fig, ax = plt.subplots(
         nrows=1,
-        figsize=(15, 3),
+        figsize=(15, 4),
         sharex=True,
         constrained_layout=True,
     )
@@ -625,7 +682,7 @@ def plot_bnn_gamma_combined(
     median_0 = np.percentile(pp_samples_0, 50, axis=0)
 
     if f"X_{split}_timestamps" in data.keys():
-        timestamps = data[f"X_{split}_timestamps"][slice(*plot_interval)]
+        timestamps = data[f"X_{split}_timestamps"]  # [slice(*plot_interval)]
     elif "index" in data.keys():
         timestamps = data["index"]
     else:
@@ -636,7 +693,7 @@ def plot_bnn_gamma_combined(
         conf_interval=[hdi, hdi_0],
         medians=[median, median_0],
         plot_interval=plot_interval,
-        title=f"{model_cfg.name} {model_cfg.data.bid_zone} {data_cfg.dataset} {split_names[split]}",
+        title=f"BNN {model_cfg.data.bid_zone} {data_cfg.dataset} {split_names[split]}",
         timestamps=timestamps,
     )
     return fig, ax
@@ -1165,33 +1222,58 @@ def plot_stacked_hdi_intervals(
     plt.show()
 
 
+def compute_pit_from_quantiles(preds, y_true, quantiles):
+    """
+    preds [N, Q]
+    y_true: [N]
+    quantiles: [Q]
+    """
+    preds = np.asarray(preds)
+    y_true = np.asarray(y_true)
+    quantiles = np.asarray(quantiles)
+
+    pits = np.empty(len(y_true))
+
+    for t in range(len(y_true)):
+        pits[t] = QuantileDistribution(quantiles, preds[t]).cdf(y_true[t])
+
+    return pits
+
+
 # Plot PIT (Probability Integral Transform) histogram
 def plot_pit_histogram(
     preds,
     Y_true,
-    bz,
+    model_cfg,
     bins=20,
     figsize=(5, 3),
-    print_mean=True,
 ):
+    if model_cfg.backend == "numpyro":
+        # Compute PIT values
+        pits = np.array(
+            [
+                percentileofscore(
+                    preds[:, t],
+                    Y_true[t],
+                    kind="mean",
+                )
+                / 100.0
+                for t in range(preds.shape[1])
+            ]
+        )
 
-    # Compute PIT values
-    pits = np.array(
-        [
-            percentileofscore(
-                preds[:, t],
-                Y_true[t],
-                kind="mean",
-            )
-            / 100.0
-            for t in range(preds.shape[1])
-        ]
-    )
+    else:
+        if model_cfg.params.quantiles is None:
+            if model_cfg.params.num_quantiles is not None:
+                quantiles = torch.linspace(0, 1, model_cfg.params.num_quantiles)
+            else:
+                quantiles = torch.linspace(0, 1, 51)
+        else:
+            quantiles = torch.tensor(model_cfg.params.quantiles)
 
-    if print_mean:
-        pits_mean = pits.mean()
-        print(f"PIT mean: {pits_mean:.4f} (should be ~1 if calibrated)")
+        pits = compute_pit_from_quantiles(preds, Y_true, quantiles)
 
+    model_name_for_title = "BNN" if model_cfg.backend == "numpyro" else "QRNN"
     # Plot histogram
     plt.figure(figsize=figsize)
     plt.hist(
@@ -1202,7 +1284,7 @@ def plot_pit_histogram(
         alpha=0.8,
         color="#A6CEE3",
         edgecolor="white",
-        label=f"PIT histogram ({bz})",
+        label=f"PIT histogram",
     )
     plt.axhline(
         1.0,
@@ -1214,7 +1296,7 @@ def plot_pit_histogram(
 
     plt.xlabel("PIT value")
     plt.ylabel("Density")
-    plt.title("PIT histogram")
+    plt.title(f"PIT histogram {model_name_for_title} ({model_cfg.data.bid_zone})")
     plt.legend()
     plt.show()
 

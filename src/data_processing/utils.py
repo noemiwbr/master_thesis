@@ -181,11 +181,13 @@ def load_torch_model(
     num_parks = checkpoint["num_parks"]
     target = checkpoint["model_cfg"].params.target
 
-    # Quantiles
     if quantiles is not None:
         quantiles = quantiles
     elif checkpoint["model_cfg"].params.quantiles is None:
-        quantiles = torch.linspace(0, 1, 51)
+        if checkpoint["model_cfg"].params.num_quantiles is not None:
+            quantiles = np.linspace(0, 1, checkpoint["model_cfg"].params.num_quantiles)
+        else:
+            quantiles = np.linspace(0, 1, 51)
     else:
         quantiles = torch.tensor(checkpoint["model_cfg"].params.quantiles)
 
