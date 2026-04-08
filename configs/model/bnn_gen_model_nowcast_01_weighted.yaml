@@ -1,0 +1,16 @@
+backend: numpyro
+sampler: mcmc
+name: model_mw_gamma_extended
+experiment_name: Gamma weighted NO1 (100,150)
+
+data:
+  path: ../configs/data/nowcast01.yaml
+  bid_zone: ELSPOT NO1
+
+args:
+  num_warmup: 100
+  num_samples: 150
+  num_chains: 2
+
+params:
+  target: gen
