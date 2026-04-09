@@ -90,9 +90,7 @@ class WindPowerQuantile_weighted(nn.Module):
         self.right_count = Q - self.mid_idx - 1
 
         self.shared_mlp = nn.Sequential(
-            nn.Linear(num_features, 32),
-            nn.Softplus(),
-            nn.Linear(32, 16),
+            nn.Linear(num_features, 16),
             nn.Softplus(),
             nn.Linear(16, 8),
             nn.Softplus(),
