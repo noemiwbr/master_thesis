@@ -108,7 +108,7 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
     print("\n   coverage_025_975_train:", metrics["coverage_025_975_train"])
     print("\n   coverage_0_50_train:", metrics["coverage_0_50_train"])
 
-    return metrics, y_pred
+    return metrics, y_pred, y_pred_train
 
 
 def evaluate_numpyro(
@@ -210,9 +210,9 @@ def evaluate_numpyro(
     return metrics, y_pred, pp_samples, y_pred_median, percentiles.T, hdis
 
 
-def test_BNN(file_name, eval_data, member=0):
+def test_BNN(file_name, eval_data, member=0, split="eval"):
 
-    eval_data_x = eval_data["X_eval"]
+    eval_data_x = eval_data[f"X_{split}"]
     if len(eval_data_x.shape) == 4:
         eval_data_x = eval_data_x[:, :, member]
         print(f"Choose ensemble member {member}")
@@ -221,13 +221,21 @@ def test_BNN(file_name, eval_data, member=0):
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
 
     forecast = pd.DataFrame(
-        index=eval_data["index"],
+        index=(
+            eval_data["index"]
+            if split == "eval"
+            else eval_data[f"X_{split}_timestamps"]
+        ),
         columns=bid_zones,
         data=0,
     )
     forecast_extended = [
         pd.DataFrame(
-            index=eval_data["index"],
+            index=(
+                eval_data["index"]
+                if split == "eval"
+                else eval_data[f"X_{split}_timestamps"]
+            ),
             columns=["median", "hdi_lower", "hdi_upper"],
             data=0,
         )
@@ -282,7 +290,12 @@ def test_BNN(file_name, eval_data, member=0):
 
 
 def test_QR(
-    file_name, eval_data, ensembles=False, from_now_to_forecast=False, member=0
+    file_name,
+    eval_data,
+    ensembles=False,
+    from_now_to_forecast=False,
+    member=0,
+    split="eval",
 ):
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
@@ -296,19 +309,27 @@ def test_QR(
     #     idx = [i for i, c in enumerate(feature_cols) if c != "avg_ensemble_var"]
     #     X_eval = eval_data["X_eval"][:, :, 0, idx]
 
-    eval_data_x = eval_data["X_eval"]
-    if len(eval_data["X_eval"].shape) == 4 and not ensembles:
-        eval_data_x = eval_data["X_eval"][:, :, member]
+    eval_data_x = eval_data[f"X_{split}"]
+    if len(eval_data[f"X_{split}"].shape) == 4 and not ensembles:
+        eval_data_x = eval_data[f"X_{split}"][:, :, member]
         print(f"Choose ensemble member {member}")
 
     forecast = pd.DataFrame(
-        index=eval_data["index"],
+        index=(
+            eval_data["index"]
+            if split == "eval"
+            else eval_data[f"X_{split}_timestamps"]
+        ),
         columns=bid_zones,
         data=0,
     )
     forecast_extended = [
         pd.DataFrame(
-            index=eval_data["index"],
+            index=(
+                eval_data["index"]
+                if split == "eval"
+                else eval_data[f"X_{split}_timestamps"]
+            ),
             columns=["median", "hdi_lower", "hdi_upper"],
             data=0,
         )
@@ -340,7 +361,7 @@ def test_QR(
                 y_sum_pred = loaded_model(torch.tensor(eval_data_x))
 
                 if "cf" in file_name:
-                    y_sum_pred *= eval_data["Y_eval_aval"][:, None]
+                    y_sum_pred *= eval_data[f"Y_{split}_aval"][:, None]
                 Y_pred = y_sum_pred.numpy()
 
                 hdis = np.array(
@@ -348,26 +369,26 @@ def test_QR(
                         QuantileDistribution(quantiles, Y_pred[i]).hdi(
                             cred_mass=0.95, n_samples=5000
                         )
-                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
                     ]
                 )
                 lower = np.array(
                     [
                         QuantileDistribution(quantiles, Y_pred[i]).icdf(0.025)
-                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
                     ]
                 )
                 upper = np.array(
                     [
                         QuantileDistribution(quantiles, Y_pred[i]).icdf(0.975)
-                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
                     ]
                 )
 
                 medians = np.array(
                     [
                         QuantileDistribution(quantiles, Y_pred[i]).icdf(0.5)
-                        for i in range(eval_data["Y_eval_gen"].shape[0])
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
                     ]
                 )
 
@@ -389,10 +410,16 @@ def test_QR(
     return forecast, forecast_extended, bz_from_checkpoint, y_sum_pred
 
 
-def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_cfg):
+def evaluate_numpyro_on_train_set(
+    model, samples, rng_key_predict, data, model_cfg, split="train"
+):
 
-    X_test = data["X_train"]
-    Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
+    X_test = data[f"X_{split}"]
+    Y = (
+        data[f"Y_{split}_gen"]
+        if model_cfg.params.target == "gen"
+        else data[f"Y_{split}_cf"]
+    )
 
     # Handle forecast vs nowcast
     if (
@@ -413,7 +440,7 @@ def evaluate_numpyro_on_train_set(model, samples, rng_key_predict, data, model_c
     y_pred = (
         predictive["Y"]
         if model_cfg.params.target == "gen"
-        else predictive["Y"] * data["Y_train_aval"]
+        else predictive["Y"] * data[f"Y_{split}_aval"]
     )
     print(y_pred.shape)
     y_pred_median = np.percentile(y_pred, 50, axis=0)
