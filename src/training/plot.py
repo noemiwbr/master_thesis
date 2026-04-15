@@ -101,6 +101,111 @@ def plot_qr_hdi_prediction(
     return fig, axes
 
 
+def plot_qr_prediction_ensemble(
+    Y_true,
+    Y_pred,
+    title,
+    timestamps,
+    plot_interval=[0, 1000],
+    cred_mass=0.95,
+):
+
+    ensemble = torch.stack(Y_pred, dim=0)  # [15, N, Q]
+    ensemble_mean = torch.mean(ensemble, dim=0)  # [N, Q]
+
+    quantiles = torch.linspace(0, 1, Y_pred[0].shape[-1])
+    median_idx = torch.argmin(torch.abs(quantiles - 0.5)).item()
+    lower_idx = torch.argmin(torch.abs(quantiles - ((1 - cred_mass) / 2))).item()
+    upper_idx = torch.argmin(torch.abs(quantiles - (1 - (1 - cred_mass) / 2))).item()
+
+    df_ensemble = pd.DataFrame(
+        np.stack(
+            [
+                Y_true,
+                ensemble_mean[:, lower_idx],
+                ensemble_mean[:, upper_idx],
+                ensemble_mean[:, median_idx],
+            ]
+        ).T,
+        index=timestamps,
+        columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
+    )
+
+    df_member0 = pd.DataFrame(
+        np.stack(
+            [
+                Y_true,
+                Y_pred[0][:, lower_idx],
+                Y_pred[0][:, upper_idx],
+                Y_pred[0][:, median_idx],
+            ]
+        ).T,
+        index=timestamps,
+        columns=["Y_true", "hdi_lower", "hdi_upper", "median"],
+    )
+
+    full_index = pd.date_range(
+        df_ensemble.index.min(), df_ensemble.index.max(), freq="h"
+    )
+    # Reindex and fill missing timestamps with NaN
+    df_ensemble_full = df_ensemble.reindex(full_index)
+    df_member0_full = df_member0.reindex(full_index)
+
+    fig, ax = plt.subplots(
+        nrows=1,
+        figsize=(15, 4),
+        sharex=True,
+        constrained_layout=True,
+    )
+    ax.plot(
+        df_member0_full.index[slice(*plot_interval)],
+        df_member0_full["Y_true"][slice(*plot_interval)],
+        ".",
+        color="black",
+        label="Observed data",
+        markersize=4,
+    )
+
+    ax.fill_between(
+        df_member0_full.index[slice(*plot_interval)],
+        df_member0_full["hdi_lower"][slice(*plot_interval)],
+        df_member0_full["hdi_upper"][slice(*plot_interval)],
+        color="lightblue",
+        alpha=0.5,
+        label=f"{int(cred_mass * 100)}% PI member 0",
+    )
+    ax.plot(
+        df_member0_full.index[slice(*plot_interval)],
+        df_member0_full["median"][slice(*plot_interval)],
+        color="red",
+        label="Median member 0",
+        lw=2,
+    )
+
+    ax.fill_between(
+        df_ensemble_full.index[slice(*plot_interval)],
+        df_ensemble_full["hdi_lower"][slice(*plot_interval)],
+        df_ensemble_full["hdi_upper"][slice(*plot_interval)],
+        color="blue",
+        alpha=0.1,
+        label=f"{int(cred_mass * 100)}% PI across-members",
+    )
+    ax.plot(
+        df_ensemble_full.index[slice(*plot_interval)],
+        df_ensemble_full["median"][slice(*plot_interval)],
+        color="blue",
+        label="Mean Median across-members",
+        lw=2,
+    )
+
+    ax.set(
+        ylabel="Total power",
+        xlabel="Time",
+        title=title,
+    )
+    ax.legend()
+
+
 def plot_qr_hdi_prediction_simple(
     Y_true,
     conf_interval,
@@ -141,14 +246,18 @@ def plot_qr_hdi_prediction_simple(
         df_full["hdi_upper"][slice(*plot_interval)],
         color="#A6CEE3",
         alpha=0.5,
-        label=f"{int(cred_mass * 100)}% credible interval",
+        label=(
+            f"{int(cred_mass * 100)}% HDI"
+            if "BNN" in title
+            else f"{int(cred_mass * 100)}% PI"
+        ),
     )
 
     plt.plot(
         df_full.index[slice(*plot_interval)],
         df_full["median"][slice(*plot_interval)],
         color="red",
-        label="Posterior median",
+        label="Posterior median" if "BNN" in title else "Predicted median",
         lw=2,
     )
 
@@ -189,15 +298,10 @@ def plot_qr_hdi_prediction_ensemble_combined(
     full_index_all = pd.date_range(df_all.index.min(), df_all.index.max(), freq="h")
     df_full_all = df_all.reindex(full_index_all)
 
-    fig, ax = plt.subplots(
-        nrows=1,
-        figsize=(15, 4),
-        sharex=True,
-        constrained_layout=True,
-    )
+    plt.figure(figsize=(15, 4))
 
     # Top plot
-    ax.plot(
+    plt.plot(
         df_full_0.index[slice(*plot_interval)],
         df_full_0["Y_true"][slice(*plot_interval)],
         ".",
@@ -206,15 +310,15 @@ def plot_qr_hdi_prediction_ensemble_combined(
         markersize=4,
     )
 
-    ax.fill_between(
+    plt.fill_between(
         df_full_0.index[slice(*plot_interval)],
         df_full_0["hdi_lower"][slice(*plot_interval)],
         df_full_0["hdi_upper"][slice(*plot_interval)],
         color="lightblue",
         alpha=0.5,
-        label=f"{int(cred_mass * 100)}% credible interval member 0",
+        label=f"{int(cred_mass * 100)}% HDI member 0",
     )
-    ax.plot(
+    plt.plot(
         df_full_0.index[slice(*plot_interval)],
         df_full_0["median"][slice(*plot_interval)],
         color="red",
@@ -222,15 +326,15 @@ def plot_qr_hdi_prediction_ensemble_combined(
         lw=2,
     )
 
-    ax.fill_between(
+    plt.fill_between(
         df_full_all.index[slice(*plot_interval)],
         df_full_all["hdi_lower"][slice(*plot_interval)],
         df_full_all["hdi_upper"][slice(*plot_interval)],
         color="blue",
         alpha=0.1,
-        label=f"{int(cred_mass * 100)}% credible interval across-members",
+        label=f"{int(cred_mass * 100)}% HDI across-members",
     )
-    ax.plot(
+    plt.plot(
         df_full_all.index[slice(*plot_interval)],
         df_full_all["median"][slice(*plot_interval)],
         color="blue",
@@ -238,14 +342,13 @@ def plot_qr_hdi_prediction_ensemble_combined(
         lw=2,
     )
 
-    ax.set(
-        ylabel="Total power",
-        xlabel="Time",
-        title=title,
-    )
-    ax.legend()
+    plt.ylabel("Total power")
+    plt.xlabel("Time")
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
 
-    return fig, ax
+    return
 
 
 def plot_qr_hdi_prediction_ensemble(
@@ -451,6 +554,7 @@ def plot_qr_hdi_prediction_ensemble_std(
     ensemble_results,
     plot_interval=[0, 1000],
     cred_mass=0.95,
+    dataset="forecast",
     title="QR Power Generation Prediction",
     timestamps=None,
 ):
@@ -476,7 +580,7 @@ def plot_qr_hdi_prediction_ensemble_std(
     keys = ["median", "hdi_upper", "hdi_lower"]
     colors = ["red", "lightblue", "lightblue"]
     alphas = [0.3, 1, 1]
-    if "forecast" in title:
+    if dataset == "forecast":
         for member in range(0, 15):
             alpha = 0.5 if member == 0 else 0.2
 
@@ -487,7 +591,9 @@ def plot_qr_hdi_prediction_ensemble_std(
                 lw=1.5 if member == 0 else 1,
                 alpha=alpha,
                 linestyle="-",
-                label=f"95% HDI member-wise",
+                label=(
+                    f"95% HDI member-wise" if "BNN" in title else "95% PI member-wise"
+                ),
             )
             ax.plot(
                 ens_df_full.index[slice(*plot_interval)],
@@ -504,7 +610,11 @@ def plot_qr_hdi_prediction_ensemble_std(
                 lw=2 if member == 0 else 0.8,
                 alpha=alpha,
                 linestyle="-",
-                label=f"Posterior median member-wise",
+                label=(
+                    f"Posterior median member-wise"
+                    if "BNN" in title
+                    else "Predicted median member-wise"
+                ),
             )
 
     ax.plot(
@@ -618,8 +728,8 @@ def extract_quantile_curves(
     Y_pred_quantiles,
     quantiles,
     median_q=0.5,
-    lower_q=0.02,
-    upper_q=0.98,
+    lower_q=0.025,
+    upper_q=0.975,
 ):
     def q_idx(q):
         idx = np.where(quantiles == q)[0]
@@ -688,15 +798,15 @@ def plot_bnn_gamma_combined(
     else:
         timestamps = None
 
-    fig, ax = plot_qr_hdi_prediction_ensemble_combined(
+    plot_qr_hdi_prediction_ensemble_combined(
         Y_true=data[f"Y_{split}_gen"],
         conf_interval=[hdi, hdi_0],
         medians=[median, median_0],
         plot_interval=plot_interval,
-        title=f"BNN {model_cfg.data.bid_zone} {data_cfg.dataset} {split_names[split]}",
+        title=f"BNN: Aggregated ensemble member prediction ({split_names[split]} set, {model_cfg.data.bid_zone})",
         timestamps=timestamps,
     )
-    return fig, ax
+    return
 
 
 # def plot_quantile_calibration(
@@ -729,6 +839,7 @@ def plot_quantile_calibration(
     Y_pred_quantiles,
     quantiles,
     bz,
+    model_name,
 ):
 
     Y_true = np.asarray(Y_true)
@@ -745,8 +856,9 @@ def plot_quantile_calibration(
     plt.plot([0, 1], [0, 1], "--", color="gray", label="Ideal")
     plt.xlabel("Nominal quantile τ")
     plt.ylabel("Empirical coverage")
-    plt.title(f"Calibration plot ({bz})")
+    plt.title(f"{model_name}: Calibration plot ({bz})")
     plt.legend()
+    plt.tight_layout()
     plt.grid(True)
 
     return emp_cov
@@ -1166,6 +1278,73 @@ def plot_posterior_predictive_family(
     plt.show()
 
 
+def plot_posterior_predictive_family_simple(
+    predictive,
+    model_cfg,
+    data,
+    t,
+    hdi=None,
+    bins=30,
+):
+
+    Y_true = (
+        data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+    )
+    model_name = model_cfg.name.lower()
+
+    # Posterior predictive samples
+    y_samples = np.asarray(predictive[:, t])
+    pred_median = np.median(y_samples)
+
+    # X-range (robust to long tails)
+    xmax = float(np.quantile(y_samples, 0.995))
+    x_kde = np.linspace(0, xmax, 100)
+
+    plt.figure(figsize=(6, 4))
+
+    # KDE
+    kde = gaussian_kde(y_samples)
+
+    if hdi is not None:
+        hdi_lower, hdi_upper = hdi[t]
+        plt.axvspan(
+            hdi_lower,
+            hdi_upper,
+            color="#D3D3D3",
+            alpha=0.6,
+            label="95% HDI samples",
+        )
+
+    plt.plot(x_kde, kde(x_kde), color="black", lw=2, label="KDE")
+
+    plt.hist(
+        y_samples,
+        bins=bins,
+        density=True,
+        alpha=0.8,
+        color="#A6CEE3",
+        label="Posterior predictive samples",
+    )
+
+    plt.title(f"Posterior predictive samples (t={t})")
+    plt.xlabel("Power output (MW)" if "gamma" in model_name else "Capacity factor")
+    plt.ylabel("Density")
+
+    # True value
+    if Y_true is not None:
+        y_true = float(Y_true[t])
+        plt.axvline(y_true, color="red", lw=2, linestyle="--", label="True Y")
+
+    plt.axvline(
+        pred_median, color="blue", lw=2, linestyle="--", label="Median prediction"
+    )
+
+    plt.xlim(0, xmax)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 # Plot stacked HDI intervals for posterior predictive samples
 def plot_stacked_hdi_intervals(
     preds,
@@ -1296,9 +1475,9 @@ def plot_pit_histogram(
 
     plt.xlabel("PIT value")
     plt.ylabel("Density")
-    plt.title(f"PIT histogram {model_name_for_title} ({model_cfg.data.bid_zone})")
+    plt.title(f"{model_name_for_title}: PIT histogram ({model_cfg.data.bid_zone})")
+    plt.tight_layout()
     plt.legend()
-    plt.show()
 
     return pits
 
