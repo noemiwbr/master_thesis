@@ -3,32 +3,18 @@ import sys
 sys.path.append("../src")
 
 from models.model import (
-    WindPowerQuantile,
-    WindPowerQuantileEnsembles,
-    WindPowerModel_simple,
     WindPowerQuantile_weighted,
-    model_mw_gamma,
-    model_cf_beta,
     model_mw_gamma_extended,
-    model_mw_gamma_extended_site1,
-    model_mw_normal_extended,
 )
 import numpy as np
 
 # Registries
 TORCH_MODELS = {
-    "WindPowerQuantile": WindPowerQuantile,
-    "WindPowerQuantileEnsembles": WindPowerQuantileEnsembles,
-    "WindPowerModel_simple": WindPowerModel_simple,
     "WindPowerQuantile_weighted": WindPowerQuantile_weighted,
 }
 
 NUMPYRO_MODELS = {
-    "model_mw_gamma": model_mw_gamma,
-    "model_cf_beta": model_cf_beta,
     "model_mw_gamma_extended": model_mw_gamma_extended,
-    "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
-    "model_mw_normal_extended": model_mw_normal_extended,
 }
 
 
@@ -53,40 +39,17 @@ def build_torch_model(model_cfg, data):
     model_cls = TORCH_MODELS[model_cfg.name]
     X = data["X_train"]
 
-    if model_cfg.name in {
-        "WindPowerQuantile",
-        "WindPowerQuantileEnsembles",
-        "WindPowerModel_simple",
-        "WindPowerQuantile_weighted",
-    }:
-        if model_cfg.name == "WindPowerModel_simple":
-            return model_cls(
-                num_features=X.shape[-1],
-            )
+    if model_cfg.params.num_quantiles is not None:
+        quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
+    else:
+        quantiles = np.linspace(0, 1, 51)
 
-        if model_cfg.params.quantiles is None:
-            if model_cfg.params.num_quantiles is not None:
-                quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
-            else:
-                quantiles = np.linspace(0, 1, 51)
-        else:
-            quantiles = tuple(model_cfg.params.quantiles)
-
-        if model_cfg.name == "WindPowerQuantile_weighted":
-            return model_cls(
-                num_features=X.shape[-1],
-                num_parks=data["X_train"].shape[-2],
-                quantiles=quantiles,
-                target=model_cfg.params.target,
-            )
-
-        return model_cls(
-            num_features=X.shape[-1],
-            quantiles=quantiles,
-            target=model_cfg.params.target,
-        )
-
-    return model_cls(**model_cfg.params)
+    return model_cls(
+        num_features=X.shape[-1],
+        num_parks=data["X_train"].shape[-2],
+        quantiles=quantiles,
+        target=model_cfg.params.target,
+    )
 
 
 def build_numpyro_model(model_cfg):

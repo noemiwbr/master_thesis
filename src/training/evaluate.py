@@ -15,12 +15,7 @@ from data_processing.utils import (
     QuantileDistribution,
 )
 from models.model import (
-    model_mw_gamma,
-    model_cf_logitnormal,
-    model_cf_beta,
     model_mw_gamma_extended,
-    model_mw_gamma_extended_site1,
-    model_mw_normal_extended,
 )
 import torch
 import re
@@ -29,24 +24,14 @@ import properscoring as ps
 from data_processing.utils import QuantileDistribution
 
 
+# TODO: remove model_cfg
 def predict(model, data, model_cfg, split="test", member=0):
 
     X = data[f"X_{split}"]
 
-    # Model-specific input handling
-    if (
-        model_cfg.name in ["WindPowerQuantile", "WindPowerQuantile_weighted"]
-        and X.ndim == 4
-    ):
+    # Handle ensemble input, choose specified member
+    if X.ndim == 4:
         X = X[:, :, member]
-        print(f"Choose member {member}")
-
-    if model_cfg.name == "WindPowerQuantileEnsembles" and X.ndim != 4:
-        raise ValueError(
-            "WindPowerQuantileEnsembles requires ensemble input with shape "
-            "[T, S, E, F], but got X.ndim = "
-            f"{X.ndim} and shape {tuple(X.shape)}"
-        )
 
     model.eval()
     with torch.no_grad():
@@ -64,7 +49,7 @@ def rmse_on_quantile(y_true, y_pred_q, quantiles, q=0.5):
     return rmse(y_true, y_pred_q[:, q_idx])
 
 
-# TODO: fix, takes closest quantile if the requested doesn't exist
+# Uses closest quantile if the requested doesn't exist
 def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
     ql = torch.argmin(torch.abs(quantiles - lower))
     qu = torch.argmin(torch.abs(quantiles - upper))
@@ -77,12 +62,8 @@ def coverage(y_true, y_pred_q, quantiles, lower=0.025, upper=0.975):
 def evaluate_model(model, data, quantiles, model_cfg, member=0):
     data = to_tensor(data)
 
-    y_true = (
-        data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
-    )
-    y_true_train = (
-        data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
-    )
+    y_true = data["Y_test_gen"]
+    y_true_train = data["Y_train_gen"]
 
     y_pred = predict(model, data, model_cfg, split="test", member=member)
     y_pred_train = predict(model, data, model_cfg, split="train", member=member)
@@ -91,18 +72,14 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
     for s, y_p, y_t in zip(
         ["", "_train"], [y_pred, y_pred_train], [y_true, y_true_train]
     ):
-        if model_cfg.name == "WindPowerModel_simple":  # no quantiles
-            metrics["rmse_median" + s] = rmse(y_t, y_p)
-            metrics["coverage_025_975" + s] = 0
-            metrics["coverage_0_50" + s] = 0
-            metrics["crps" + s] = None
-        else:
-            metrics["rmse_median" + s] = rmse_on_quantile(y_t, y_p, quantiles, q=0.5)
-            metrics["coverage_025_975" + s] = coverage(y_t, y_p, quantiles=quantiles)
-            metrics["coverage_0_50" + s] = coverage(
-                y_t, y_p, quantiles=quantiles, lower=0, upper=0.5
-            )
-            metrics["crps" + s] = crps_from_quantiles(y_t, y_p, quantiles)
+        metrics["rmse_median" + s] = rmse_on_quantile(y_t, y_p, quantiles, q=0.5)
+        metrics["coverage_025_975" + s] = coverage(y_t, y_p, quantiles=quantiles)
+        metrics["coverage_0_50" + s] = coverage(
+            y_t, y_p, quantiles=quantiles, lower=0, upper=0.5
+        )
+        metrics["crps" + s] = crps_from_quantiles(y_t, y_p, quantiles)
+
+    # TODO: do we need those print statements?
     print("     rmse_median_train:", metrics["rmse_median_train"])
     print("\n   crps_train:", metrics["crps_train"])
     print("\n   coverage_025_975_train:", metrics["coverage_025_975_train"])
@@ -126,66 +103,29 @@ def evaluate_numpyro(
     X_test = data["X_test"]
     X_train = data["X_train"]
 
-    Y_test = (
-        data["Y_test_gen"] * max_scaling
-        if model_cfg.params.target == "gen"
-        else data["Y_test_cf"]
-    )
-    Y_train = (
-        data["Y_train_gen"] * max_scaling
-        if model_cfg.params.target == "gen"
-        else data["Y_train_cf"]
-    )
+    Y_test = data["Y_test_gen"] * max_scaling
+    Y_train = data["Y_train_gen"] * max_scaling
 
-    # Handle forecast vs nowcast
-    if (
-        model_cfg.name
-        in [
-            "model_mw_gamma",
-            "model_cf_beta",
-            "model_mw_gamma_extended",
-            "model_mw_gamma_extended_site1",
-        ]
-        and X_test.ndim == 4
-    ):
-        X_test = X_test[:, :, member]  # first ensemble member
+    # Handle forecast ensembles, choose specified ensemble member
+    if X_test.ndim == 4:
+        X_test = X_test[:, :, member]
         X_train = X_train[:, :, member]
 
-    if svi_params is None:
-        # MCMC
-        predictive = Predictive(
-            model,
-            samples,
-            return_sites=["mu", "alpha", "Y"],
-        )
+    # MCMC
+    predictive = Predictive(
+        model,
+        samples,
+        return_sites=["mu", "alpha", "Y"],
+    )
 
-    else:
-        # SVI
-        predictive = Predictive(
-            model,
-            return_sites=["mu", "alpha", "Y"],
-            params=svi_params,
-            guide=guide,
-            num_samples=model_cfg.args.num_samples,
-        )
-
-    pp_samples = predictive(rng_key_predict, X=X_test, Y=None)  # TODO: fix SVI
-
+    pp_samples = predictive(rng_key_predict, X=X_test, Y=None)
     pp_samples_train = predictive(rng_key_predict, X=X_train, Y=None)
 
-    # Handle CF prediction, transform it back to generation prediction
-    y_pred = (
-        pp_samples["Y"] * max_scaling
-        if model_cfg.params.target == "gen"
-        else pp_samples["Y"] * data["Y_test_aval"]
-    )
-    y_pred_train = (
-        pp_samples_train["Y"] * max_scaling
-        if model_cfg.params.target == "gen"
-        else pp_samples_train["Y"] * data["Y_train_aval"]
-    )
+    y_pred = pp_samples["Y"] * max_scaling
+    y_pred_train = pp_samples_train["Y"] * max_scaling
 
     # Metrics (train and val set)
+    # TODO: train only as print statements
     y_pred_median_train = np.percentile(y_pred_train, 50, axis=0)
     print("RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
     print("CRPS train: ", ps.crps_ensemble(Y_train, y_pred_train, axis=0).mean())
@@ -242,12 +182,7 @@ def test_BNN(file_name, eval_data, member=0, split="eval"):
         for _ in range(len(bid_zones))
     ]
     model_mapping = {
-        "model_cf_beta": model_cf_beta,
-        "model_mw_gamma": model_mw_gamma,
         "model_mw_gamma_extended": model_mw_gamma_extended,
-        "model_mw_gamma_extended_site1": model_mw_gamma_extended_site1,
-        "model_cf_logitnormal": model_cf_logitnormal,
-        "model_mw_normal_extended": model_mw_normal_extended,
     }
 
     model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
@@ -300,19 +235,10 @@ def test_QR(
     bid_zones = ["ELSPOT NO1", "ELSPOT NO2", "ELSPOT NO3", "ELSPOT NO4"]
     bid_zones = [bz.replace(" ", "_") for bz in bid_zones]
 
-    # assert (
-    #     from_now_to_forecast and len(eval_data["X_eval"].shape) == 4
-    # ), "forecast has to have 4 dimensions"
-
-    # if from_now_to_forecast:
-    #     feature_cols = eval_data["feature_cols"]
-    #     idx = [i for i, c in enumerate(feature_cols) if c != "avg_ensemble_var"]
-    #     X_eval = eval_data["X_eval"][:, :, 0, idx]
-
     eval_data_x = eval_data[f"X_{split}"]
-    if len(eval_data[f"X_{split}"].shape) == 4 and not ensembles:
+    # Handle forecast by choosing specified member
+    if len(eval_data[f"X_{split}"].shape) == 4:
         eval_data_x = eval_data[f"X_{split}"][:, :, member]
-        print(f"Choose ensemble member {member}")
 
     forecast = pd.DataFrame(
         index=(
@@ -346,64 +272,42 @@ def test_QR(
         loaded_model, checkpoint_data = load_torch_model(file_name=file_name)
         model_cfg = checkpoint_data["model_cfg"]
 
-        if model_cfg.params.quantiles is None:
-            if model_cfg.params.num_quantiles is not None:
-                quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
-            else:
-                quantiles = np.linspace(0, 1, 51)
+        if model_cfg.params.num_quantiles is not None:
+            quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
         else:
-            quantiles = tuple(model_cfg.params.quantiles)
+            quantiles = np.linspace(0, 1, 51)
 
         loaded_model.eval()
         with torch.no_grad():
 
-            if "Quantile" in checkpoint_data["model_cfg"].name:
-                y_sum_pred = loaded_model(torch.tensor(eval_data_x))
+            y_sum_pred = loaded_model(torch.tensor(eval_data_x))
 
-                if "cf" in file_name:
-                    y_sum_pred *= eval_data[f"Y_{split}_aval"][:, None]
-                Y_pred = y_sum_pred.numpy()
+            Y_pred = y_sum_pred.numpy()
 
-                hdis = np.array(
-                    [
-                        QuantileDistribution(quantiles, Y_pred[i]).hdi(
-                            cred_mass=0.95, n_samples=5000
-                        )
-                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
-                    ]
-                )
-                lower = np.array(
-                    [
-                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.025)
-                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
-                    ]
-                )
-                upper = np.array(
-                    [
-                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.975)
-                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
-                    ]
-                )
+            lower = np.array(
+                [
+                    QuantileDistribution(quantiles, Y_pred[i]).icdf(0.025)
+                    for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                ]
+            )
+            upper = np.array(
+                [
+                    QuantileDistribution(quantiles, Y_pred[i]).icdf(0.975)
+                    for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                ]
+            )
 
-                medians = np.array(
-                    [
-                        QuantileDistribution(quantiles, Y_pred[i]).icdf(0.5)
-                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
-                    ]
-                )
+            medians = np.array(
+                [
+                    QuantileDistribution(quantiles, Y_pred[i]).icdf(0.5)
+                    for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                ]
+            )
 
-                # TODO: not HDI but percentiles, is naming important of forecast columns?
-                forecast_extended[i][["median", "hdi_lower", "hdi_upper"]] = (
-                    # np.column_stack([medians, hdis[:, 0], hdis[:, 1]])
-                    np.column_stack([medians, lower, upper])
-                )
-
-            else:  # TODO catch more models here
-                y_sum_pred = loaded_model(
-                    torch.tensor(eval_data_x)
-                ).numpy()  # TODO * eval_data["Y_eval_aval"]  # CF
-                medians = y_sum_pred  # np.percentile(y_sum_pred, 50, axis=0)
-                forecast_extended[i]["median"] = medians
+            # TODO: not HDI but percentiles, is naming important of forecast columns?
+            forecast_extended[i][["median", "hdi_lower", "hdi_upper"]] = (
+                np.column_stack([medians, lower, upper])
+            )
 
         forecast[bz] = medians
 
@@ -415,34 +319,18 @@ def evaluate_numpyro_on_train_set(
 ):
 
     X_test = data[f"X_{split}"]
-    Y = (
-        data[f"Y_{split}_gen"]
-        if model_cfg.params.target == "gen"
-        else data[f"Y_{split}_cf"]
-    )
+    Y = data[f"Y_{split}_gen"]
 
+    # TODO: kann das überhaupt vorkommen? Train ist doch sowieso nowcast?
     # Handle forecast vs nowcast
-    if (
-        model_cfg.name
-        in [
-            "model_mw_gamma",
-            "model_cf_beta",
-            "model_mw_gamma_extended",
-            "model_mw_gamma_extended_site1",
-        ]
-        and X_test.ndim == 4
-    ):
+    if X_test.ndim == 4:
         X_test = X_test[:, :, 0]  # first ensemble member
 
     predictive = Predictive(model, samples)(rng_key_predict, X_test)
 
     # Handle CF prediction, transform it back to generation prediction
-    y_pred = (
-        predictive["Y"]
-        if model_cfg.params.target == "gen"
-        else predictive["Y"] * data[f"Y_{split}_aval"]
-    )
-    print(y_pred.shape)
+    y_pred = predictive["Y"]
+
     y_pred_median = np.percentile(y_pred, 50, axis=0)
     percentiles = np.percentile(y_pred, [2.5, 97.5], axis=0)
     hdis = az.hdi(np.expand_dims(y_pred, axis=0), hdi_prob=0.95).T
@@ -451,7 +339,9 @@ def evaluate_numpyro_on_train_set(
 
     metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
     metrics["crps"] = ps.crps_ensemble(Y, y_pred, axis=0).mean()
-    metrics["coverage_025_975"] = ((Y >= percentiles[0]) & (Y <= percentiles[1])).mean()
+    metrics["coverage_025_975"] = (
+        (Y >= percentiles[0]) & (Y <= percentiles[1])
+    ).mean()  # TODO: use HDI, not percentiles
     metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
 
     # Percentiles shape: [t_test, 2]
@@ -464,12 +354,11 @@ def crps_from_quantiles(Y, Q, taus):
     Q:    [N,Q]
     taus: [Q,]
     """
-    Y = Y.unsqueeze(1)  # [N, 1]
-
-    diff = Y - Q  # [N, Q]
+    Y = Y.unsqueeze(1)
+    diff = Y - Q
 
     # Pinball loss
-    loss = torch.maximum(taus * diff, (taus - 1) * diff)  # [N,Q]
+    loss = torch.maximum(taus * diff, (taus - 1) * diff)
 
     # Integration over quantiles
     crps = 2 * torch.trapezoid(loss, taus, dim=1)  # [N,]

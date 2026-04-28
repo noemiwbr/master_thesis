@@ -12,9 +12,6 @@ from scipy.stats import gaussian_kde
 import torch
 import pandas as pd
 from models.model import (
-    WindPowerQuantile,
-    WindPowerModel_simple,
-    WindPowerQuantileEnsembles,
     WindPowerQuantile_weighted,
 )
 from data_processing.load import (
@@ -191,16 +188,10 @@ def load_torch_model(
     else:
         quantiles = torch.tensor(checkpoint["model_cfg"].params.quantiles)
 
-    if model_class_name == "WindPowerQuantile":
-        model = WindPowerQuantile(num_features, quantiles, target)
-    elif model_class_name == "WindPowerModel_simple":
-        model = WindPowerModel_simple(num_features)
-    elif model_class_name == "WindPowerQuantile_weighted":
+    if model_class_name == "WindPowerQuantile_weighted":
         model = WindPowerQuantile_weighted(
             num_parks=num_parks, num_features=num_features, quantiles=quantiles
         )
-    elif model_class_name == "WindPowerQuantileEnsembles":
-        model = WindPowerQuantileEnsembles(num_features, quantiles, target)
     else:
         raise ValueError(f"Unknown model class: {model_class_name}")
 
@@ -409,6 +400,7 @@ def approximate_qr_intervals(
     return hdis, medians, q_lower, q_upper
 
 
+# TODO: do we need that?
 # Compute ensemble variance per lead time for multiple features.
 def compute_ensemble_variance_by_lead_time():
     forecast = load_weather_forecast_parquet("../data/met_forecast.parquet")

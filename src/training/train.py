@@ -90,17 +90,10 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
     Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
     # Handle forecast vs nowcast (take member 0)
-    if (
-        model_cfg.name
-        in ["WindPowerQuantile", "WindPowerModel_simple", "WindPowerQuantile_weighted"]
-    ) and X.ndim == 4:
-        X = X[:, :, 0]  # [T, S, F], TODO: chooses first member
-
-    if model_cfg.name == "WindPowerQuantileEnsembles" and X.ndim != 4:
-        raise ValueError(
-            "WindPowerQuantileEnsembles requires [T, S, E, F], "
-            f"but got shape {tuple(X.shape)}"
-        )
+    if X.ndim == 4:
+        X = X[
+            :, :, 0
+        ]  # [T, S, F], TODO: chooses first member, do we need this, training happens only on nowcast
 
     OPTIMIZER = {"adam": optim.Adam, "sgd": optim.SGD}
     optimizer = OPTIMIZER[model_cfg.training.optimizer](
@@ -149,11 +142,8 @@ def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
     X = data["X_train"]
     Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
 
-    # Handle forecast vs nowcast
-    if (
-        model_cfg.name in ["model_mw_gamma", "model_cf_beta", "model_mw_gamma_extended"]
-        and X.ndim == 4
-    ):
+    # Handle forecast vs nowcast, TODO
+    if X.ndim == 4:
         X = X[:, :, 0]  # first ensemble member
         print("use first ensemble member")
 
@@ -178,24 +168,3 @@ def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
     )
 
     return samples, rng_key, rng_key_predict
-
-
-def run_svi(
-    model,
-    X_train,
-    Y_train,
-    rng_key_svi,
-    guide,
-    optimizer=Adam,
-    lr=1e-3,
-    num_steps=1000,
-):
-    optimizer = optimizer(lr)
-    svi = SVI(
-        model, guide, optimizer, loss=Trace_ELBO(num_particles=10)
-    )  # num_particles=8
-
-    svi_result = svi.run(rng_key_svi, num_steps, X_train, Y_train, progress_bar=False)
-    print(f"Final ELBO loss: {svi_result.losses[-1]:.3f}")
-
-    return svi_result
