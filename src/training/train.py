@@ -16,7 +16,6 @@ from torch.utils.data import Dataset
 import torch
 import torch.optim as optim
 from functools import partial
-from numpyro.infer import SVI, Trace_ELBO
 from numpyro.optim import Adam
 
 
@@ -106,9 +105,7 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
         "mse": torch.nn.MSELoss(),
     }
 
-    loss_fn = LOSS[model_cfg.training.loss]
-    if model_cfg.name != "WindPowerModel_simple":
-        loss_fn = partial(loss_fn, quantiles=quantiles)
+    loss_fn = partial(LOSS[model_cfg.training.loss], quantiles=quantiles)
 
     criterion = lambda preds, target: loss_fn(preds, target)
 
@@ -124,7 +121,7 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
         num_steps=model_cfg.training.num_steps,
     )
 
-    save_torch_checkpoint(
+    _, checkpoint_name = save_torch_checkpoint(
         model=model,
         model_cfg=model_cfg,
         optimizer=optimizer,
@@ -134,18 +131,19 @@ def train_torch(model, data, quantiles, model_cfg, data_cfg):
         num_parks=X.shape[-2],
     )
 
-    return model, losses
+    return model, losses, checkpoint_name
 
 
 def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
 
     X = data["X_train"]
-    Y = data["Y_train_gen"] if model_cfg.params.target == "gen" else data["Y_train_cf"]
+    Y = data["Y_train_gen"]
 
     # Handle forecast vs nowcast, TODO
-    if X.ndim == 4:
-        X = X[:, :, 0]  # first ensemble member
-        print("use first ensemble member")
+    assert X.ndim == 3, f"X has ndim={X.ndim} instead of ndim=3"
+    # if X.ndim == 4:
+    #     X = X[:, :, 0]  # first ensemble member
+    #     print("use first ensemble member")
 
     args = {
         "num_warmup": model_cfg.args.num_warmup,
@@ -155,11 +153,9 @@ def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
 
     samples = run_inference_bnn(model, args, rng_key, X, Y)
 
-    rng_key, rng_key_predict = random.split(
-        rng_key
-    )  # TODO: remove rng_key_pred from checkpoint
+    rng_key, rng_key_predict = random.split(rng_key)
 
-    save_checkpoint(
+    _, checkpoint_name = save_checkpoint(
         samples,
         model_cfg,
         rng_key,
@@ -167,4 +163,4 @@ def sample_numpyro(model, data, model_cfg, data_cfg, rng_key):
         dataset=data_cfg.dataset,
     )
 
-    return samples, rng_key, rng_key_predict
+    return samples, rng_key, rng_key_predict, checkpoint_name

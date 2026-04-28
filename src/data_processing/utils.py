@@ -50,7 +50,7 @@ def save_checkpoint(
         pickle.dump(state, f)
 
     print(f"Saved checkpoint for model '{model_cfg.name}': {path}")
-    return path
+    return path, filename
 
 
 # Save scaler parameters for a specific bid zone and split time
@@ -144,7 +144,7 @@ def save_torch_checkpoint(
     torch.save(checkpoint, path)
     print(f"Saved checkpoint: {filename}")
 
-    return path
+    return path, filename
 
 
 def load_torch_model(
