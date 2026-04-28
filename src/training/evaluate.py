@@ -24,8 +24,7 @@ import properscoring as ps
 from data_processing.utils import QuantileDistribution
 
 
-# TODO: remove model_cfg
-def predict(model, data, model_cfg, split="test", member=0):
+def predict(model, data, split="test", member=0):
 
     X = data[f"X_{split}"]
 
@@ -65,8 +64,8 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
     y_true = data["Y_test_gen"]
     y_true_train = data["Y_train_gen"]
 
-    y_pred = predict(model, data, model_cfg, split="test", member=member)
-    y_pred_train = predict(model, data, model_cfg, split="train", member=member)
+    y_pred = predict(model, data, split="test", member=member)
+    y_pred_train = predict(model, data, split="train", member=member)
 
     metrics = {}
     for s, y_p, y_t in zip(
@@ -79,11 +78,14 @@ def evaluate_model(model, data, quantiles, model_cfg, member=0):
         )
         metrics["crps" + s] = crps_from_quantiles(y_t, y_p, quantiles)
 
-    # TODO: do we need those print statements?
-    print("     rmse_median_train:", metrics["rmse_median_train"])
-    print("\n   crps_train:", metrics["crps_train"])
-    print("\n   coverage_025_975_train:", metrics["coverage_025_975_train"])
-    print("\n   coverage_0_50_train:", metrics["coverage_0_50_train"])
+    print("\nTraining statistics:")
+    print("   RMSE train:", round(metrics["rmse_median_train"].item(), 3))
+    print("   CRPS train:", round(metrics["crps_train"].item(), 3))
+    print(
+        "   Coverage 2.5-97.5 train:",
+        round(metrics["coverage_025_975_train"].item(), 3),
+    )
+    print("   Coverage 0-50 train:", round(metrics["coverage_0_50_train"].item(), 3))
 
     return metrics, y_pred, y_pred_train
 
@@ -94,17 +96,14 @@ def evaluate_numpyro(
     data,
     model_cfg,
     samples=None,
-    svi_params=None,
-    guide=None,
     member=0,
-    max_scaling=1,
 ):
 
     X_test = data["X_test"]
     X_train = data["X_train"]
 
-    Y_test = data["Y_test_gen"] * max_scaling
-    Y_train = data["Y_train_gen"] * max_scaling
+    Y_test = data["Y_test_gen"]
+    Y_train = data["Y_train_gen"]
 
     # Handle forecast ensembles, choose specified ensemble member
     if X_test.ndim == 4:
@@ -121,15 +120,16 @@ def evaluate_numpyro(
     pp_samples = predictive(rng_key_predict, X=X_test, Y=None)
     pp_samples_train = predictive(rng_key_predict, X=X_train, Y=None)
 
-    y_pred = pp_samples["Y"] * max_scaling
-    y_pred_train = pp_samples_train["Y"] * max_scaling
+    y_pred = pp_samples["Y"]
+    y_pred_train = pp_samples_train["Y"]
 
-    # Metrics (train and val set)
-    # TODO: train only as print statements
+    # Metrics: train set
     y_pred_median_train = np.percentile(y_pred_train, 50, axis=0)
-    print("RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
-    print("CRPS train: ", ps.crps_ensemble(Y_train, y_pred_train, axis=0).mean())
+    print("\nTraining statistics:")
+    print("   RMSE train:", np.sqrt(np.mean((y_pred_median_train - Y_train) ** 2)))
+    print("   CRPS train: ", ps.crps_ensemble(Y_train, y_pred_train, axis=0).mean())
 
+    # Metrics: validation set
     y_pred_median = np.percentile(y_pred, 50, axis=0)
     percentiles = np.percentile(y_pred, [2.5, 97.5], axis=0)
     hdis = az.hdi(np.expand_dims(y_pred, axis=0), hdi_prob=0.95).T
@@ -137,14 +137,9 @@ def evaluate_numpyro(
     metrics = {}
 
     metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y_test) ** 2))
-    metrics["coverage_025_975"] = (
-        (Y_test >= percentiles[0]) & (Y_test <= percentiles[1])
-    ).mean()
+    metrics["coverage_025_975"] = ((Y_test >= hdis[0]) & (Y_test <= hdis[1])).mean()
     metrics["coverage_0_50"] = (Y_test <= y_pred_median).mean()
     metrics["crps"] = ps.crps_ensemble(Y_test, y_pred, axis=0).mean()
-
-    print("RMSE val:", metrics["rmse_median"])
-    print("CRPS val: ", metrics["crps"], "\n")
 
     # Percentiles shape: [t_test, 2]
     return metrics, y_pred, pp_samples, y_pred_median, percentiles.T, hdis
@@ -176,7 +171,7 @@ def test_BNN(file_name, eval_data, member=0, split="eval"):
                 if split == "eval"
                 else eval_data[f"X_{split}_timestamps"]
             ),
-            columns=["median", "hdi_lower", "hdi_upper"],
+            columns=["median", "lower", "upper"],
             data=0,
         )
         for _ in range(len(bid_zones))
@@ -207,15 +202,13 @@ def test_BNN(file_name, eval_data, member=0, split="eval"):
         )
 
         preds = predictive["Y"]
-        if "cf" in checkpoint["model_cfg"].name:
-            preds *= eval_data["Y_eval_aval"]
 
         median = np.percentile(preds, 50, axis=0)
         hdis = az.hdi(np.expand_dims(preds, axis=0), hdi_prob=0.95)
         hdi_lower, hdi_upper = hdis[:, 0], hdis[:, 1]
 
         forecast[bz] = median
-        forecast_extended[i][["median", "hdi_lower", "hdi_upper"]] = np.column_stack(
+        forecast_extended[i][["median", "lower", "upper"]] = np.column_stack(
             [median, hdi_lower, hdi_upper]
         )
 
@@ -227,8 +220,6 @@ def test_BNN(file_name, eval_data, member=0, split="eval"):
 def test_QR(
     file_name,
     eval_data,
-    ensembles=False,
-    from_now_to_forecast=False,
     member=0,
     split="eval",
 ):
@@ -256,7 +247,7 @@ def test_QR(
                 if split == "eval"
                 else eval_data[f"X_{split}_timestamps"]
             ),
-            columns=["median", "hdi_lower", "hdi_upper"],
+            columns=["median", "lower", "upper"],
             data=0,
         )
         for _ in range(len(bid_zones))
@@ -305,8 +296,8 @@ def test_QR(
             )
 
             # TODO: not HDI but percentiles, is naming important of forecast columns?
-            forecast_extended[i][["median", "hdi_lower", "hdi_upper"]] = (
-                np.column_stack([medians, lower, upper])
+            forecast_extended[i][["median", "lower", "upper"]] = np.column_stack(
+                [medians, lower, upper]
             )
 
         forecast[bz] = medians
@@ -321,14 +312,11 @@ def evaluate_numpyro_on_train_set(
     X_test = data[f"X_{split}"]
     Y = data[f"Y_{split}_gen"]
 
-    # TODO: kann das überhaupt vorkommen? Train ist doch sowieso nowcast?
-    # Handle forecast vs nowcast
-    if X_test.ndim == 4:
-        X_test = X_test[:, :, 0]  # first ensemble member
+    assert (
+        X_test.ndim == 3
+    ), "Wrong ndim of data, got X_test.ndim={X_test.ndim}, expected 3."
 
     predictive = Predictive(model, samples)(rng_key_predict, X_test)
-
-    # Handle CF prediction, transform it back to generation prediction
     y_pred = predictive["Y"]
 
     y_pred_median = np.percentile(y_pred, 50, axis=0)
@@ -339,9 +327,7 @@ def evaluate_numpyro_on_train_set(
 
     metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
     metrics["crps"] = ps.crps_ensemble(Y, y_pred, axis=0).mean()
-    metrics["coverage_025_975"] = (
-        (Y >= percentiles[0]) & (Y <= percentiles[1])
-    ).mean()  # TODO: use HDI, not percentiles
+    metrics["coverage_025_975"] = ((Y >= hdis[:, 0]) & (Y <= hdis[:, 1])).mean()
     metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
 
     # Percentiles shape: [t_test, 2]

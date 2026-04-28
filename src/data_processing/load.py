@@ -115,7 +115,7 @@ def get_feature_columns():
         c
         for c in feature_cols
         if not (c.startswith("wind_direction") or c.startswith("hour"))
-    ]  # TODO: how to handle wind_direction and hours? Additional scaling?
+    ]
 
     return feature_cols, site_meta_cols, scale_cols
 
@@ -385,7 +385,6 @@ def load_and_preprocess_forecast_data(
     split_time=pd.Timestamp("2025-01-01 00:00:00", tz="CET"),
     ensemble_members=None,
     data_path="../data",
-    variance_feature=False,
 ):
     """
     Load and preprocess forecast training data for multiple ensemble members.
@@ -509,10 +508,7 @@ def load_and_preprocess_forecast_data(
     global_cols = [
         "hour_x",
         "hour_y",
-        # "avg_ensemble_var",
     ]
-    if variance_feature:
-        global_cols.append("avg_ensemble_var")
 
     shifted_cols = [
         "wind_speed_10m-1",
@@ -586,39 +582,7 @@ def load_and_preprocess_forecast_data(
     sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
 
     # ------------------------------------------------------------
-    # 8. Calculate variance
-    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
-
-    if variance_feature:
-
-        def split_col(col):
-            match = re.match(r"(.+)_member_(\d+)$", col)
-            if match:
-                return match.group(1), int(match.group(2))
-            return None, None
-
-        groups = defaultdict(list)
-
-        for col in weather_scaled.columns:
-            # exclude shifted cols
-            if shifted_pattern.match(col):
-                continue
-            var, member = split_col(col)
-            if var is not None:
-                groups[var].append(col)
-
-        ensemble_var = {
-            var: weather_scaled[cols].var(axis=1) for var, cols in groups.items()
-        }
-        # TODO could also get the variance per features
-        # Calculates ensemble-variance per features and averages afterwards
-        df = pd.DataFrame(ensemble_var).add_suffix("_var")
-        weather_scaled["avg_ensemble_var"] = (
-            pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
-        )
-
-    # ------------------------------------------------------------
-    # 9. Shape data into [timesteps, windparks, ensemble members, features]
+    # 8. Shape data into [timesteps, windparks, ensemble members, features]
 
     # Align weather and wind power on timestamps
     weather_req_ensembles, windpower = align_windpower_and_weather(
@@ -657,7 +621,6 @@ def load_and_preprocess_forecast_data(
     # Select ensemble related features for the requested ensemble members
     X = np.zeros((T, W, M, F), dtype=np.float32)
 
-    # TODO: merge loops to ensure columns are sorted
     for f_idx, var in enumerate(feature_cols):
         if var in ensemble_vars:
             for m_idx, member in enumerate(ensemble_members):
@@ -688,7 +651,7 @@ def load_and_preprocess_forecast_data(
             raise KeyError(f"{var} neither in ensemble_vars nor global_cols")
 
     # ------------------------------------------------------------
-    # 10. Split into train and test data
+    # 9. Split into train and test data
     assert len(times) == X.shape[0]
 
     train_mask = times < split_time
@@ -1050,7 +1013,6 @@ def load_evaluation_forecast_data(
     dataset="forecast",
     ensemble_members=None,
     data_path="../data",
-    variance_feature=True,
 ):
     """
     Load and preprocess evaluation data for a specific dates.
@@ -1115,8 +1077,6 @@ def load_evaluation_forecast_data(
             "hour_x",
             "hour_y",
         ]
-        if variance_feature:
-            global_cols += ["avg_ensemble_var"]
 
         shifted_cols = [
             "wind_speed_10m-1",
@@ -1262,37 +1222,6 @@ def load_evaluation_forecast_data(
     )
 
     # ------------------------------------------------------------
-    # Calculate variance across ensemble members
-    shifted_pattern = re.compile(r"^wind_speed_10m[+-]1_member_(\d+)$")
-    if variance_feature:
-
-        def split_col(col):
-            match = re.match(r"(.+)_member_(\d+)$", col)
-            if match:
-                return match.group(1), int(match.group(2))
-            return None, None
-
-        groups = defaultdict(list)
-
-        for col in weather_scaled.columns:
-            # exclude shifted cols
-            if shifted_pattern.match(col):
-                continue
-            var, member = split_col(col)
-            if var is not None:
-                groups[var].append(col)
-
-        ensemble_var = {
-            var: weather_scaled[cols].var(axis=1) for var, cols in groups.items()
-        }
-        # TODO could also get the variance per features
-        # Calculates ensemble-variance per features and averages afterwards
-
-        weather_scaled["avg_ensemble_var"] = (
-            pd.DataFrame(ensemble_var).add_suffix("_var").mean(axis=1)
-        )
-
-    # ------------------------------------------------------------
     # Shape data into [timesteps, windparks, ensemble members, features]
 
     times = weather_scaled.index.get_level_values("time").unique().sort_values()
@@ -1370,9 +1299,9 @@ def load_evaluation_forecast_data(
 
 def rename_met_forecast_columns(df):
     """
-    Rename MET Forecast columns to match MET Nowcasting variable naming.
-    Handles ensemble members and drops columns not present in nowcast (e.g., gust).
-    Handles both single-digit (_0, _1) and zero-padded (_00, _01) member formats.
+    - Rename MET Forecast columns to match MET Nowcasting variable naming.
+    - Handles ensemble members and drops columns not present in nowcast (e.g. gust)
+    - Handles both single-digit (_0, _1) and zero-padded (_00, _01) member formats
     """
 
     renamed = {}
