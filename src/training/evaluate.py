@@ -312,12 +312,20 @@ def evaluate_numpyro_on_train_set(
     X_test = data[f"X_{split}"]
     Y = data[f"Y_{split}_gen"]
 
-    assert (
-        X_test.ndim == 3
-    ), "Wrong ndim of data, got X_test.ndim={X_test.ndim}, expected 3."
+    # Handle forecast data
+    if X_test.ndim == 4:
+        y_pred = []
+        for member in range(15):
+            X_test = data[f"X_{split}"][:, :, member]
 
-    predictive = Predictive(model, samples)(rng_key_predict, X_test)
-    y_pred = predictive["Y"]
+            predictive = Predictive(model, samples)(rng_key_predict, X_test)
+            y_pred.append(predictive["Y"])
+
+        y_pred = np.concatenate(y_pred, axis=0)
+
+    else:
+        predictive = Predictive(model, samples)(rng_key_predict, X_test)
+        y_pred = predictive["Y"]
 
     y_pred_median = np.percentile(y_pred, 50, axis=0)
     percentiles = np.percentile(y_pred, [2.5, 97.5], axis=0)
@@ -327,7 +335,7 @@ def evaluate_numpyro_on_train_set(
 
     metrics["rmse_median"] = np.sqrt(np.mean((y_pred_median - Y) ** 2))
     metrics["crps"] = ps.crps_ensemble(Y, y_pred, axis=0).mean()
-    metrics["coverage_025_975"] = ((Y >= hdis[:, 0]) & (Y <= hdis[:, 1])).mean()
+    metrics["coverage_025_975"] = ((Y >= hdis[0]) & (Y <= hdis[1])).mean()
     metrics["coverage_0_50"] = (Y <= y_pred_median).mean()
 
     # Percentiles shape: [t_test, 2]
