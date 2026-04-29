@@ -1231,9 +1231,6 @@ def load_evaluation_forecast_data(
     windparks_from_weather = (
         weather_scaled.index.get_level_values("windpark").unique().sort_values()
     )
-    # assert len(windparks) == len(
-    #     windparks_from_weather
-    # ), "Not all windparks present in weather"
 
     T = len(times)
     W = len(windparks_from_weather)
@@ -1374,11 +1371,8 @@ def rename_met_forecast_columns(df):
 
     print(f"\nColumn mapping summary:")
     print(f"  Original columns: {len(df.columns)}")
-    print(f"  Renamed columns: {len(renamed)}")
-    print(f"  Dropped columns: {len(columns_to_drop)}")
     print(f"  Final columns: {len(df_renamed.columns)}")
 
-    print(f"\n {df_renamed.index}")
     return df_renamed
 
 
@@ -1417,7 +1411,6 @@ def select_ensemble_member(df, member=0):
 
 def load_dataset(cfg):
     if cfg.dataset == "nowcast":
-        print(cfg.bid_zone)
         data = load_and_preprocess_data(
             bid_zone=cfg.bid_zone, split_time=pd.Timestamp(cfg.split_time, tz="CET")
         )
