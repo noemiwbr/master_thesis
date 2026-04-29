@@ -4,14 +4,14 @@ import traceback
 from pathlib import Path
 import torch
 import jax
-from numpyro.infer.autoguide import AutoDiagonalNormal
 import sys
 
 sys.path.append("../src")
 from configs.load_config import load_config
 from data_processing.load import load_dataset
+from data_processing.synthetic_data import synthetic_power_data
 from models.build import build_model
-from training.train import train_torch, sample_numpyro, run_svi
+from training.train import train_torch, sample_numpyro
 from training.evaluate import evaluate_model, evaluate_numpyro
 from jax import random
 import argparse
@@ -21,13 +21,8 @@ import argparse
 # ============================================================================
 
 EXPERIMENTS = [
-    "../configs/model/torch_model_quantile.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_01.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_02.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_03.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_04.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
-    # "../configs/model/bnn_gen_model_nowcast_03_emb.yaml",
+    "../configs/model/torch_model_quantile_04.yaml",
+    "../configs/model/bnn_gen_model_nowcast_01_weighted.yaml",
 ]
 
 RESULTS_DIR = Path("results")
@@ -43,6 +38,7 @@ SUMMARY_FIELDS = [
     "runtime_sec",
     "error",
     "loss",
+    "checkpoint",
 ]
 
 
@@ -71,8 +67,9 @@ def append_to_summary(row: dict):
 # ============================================================================
 
 
-def run_single_experiment(exp_path: str) -> dict:
-    start_time = time.time()
+def run_single_experiment(exp_path: str, synthetic: bool) -> dict:
+    if synthetic:
+        print("Using synthetic target data")
 
     # ---- load configs ----
     model_cfg = load_config(exp_path)
@@ -88,17 +85,22 @@ def run_single_experiment(exp_path: str) -> dict:
     # ---- data ----
     data = load_dataset(data_cfg)
 
+    if synthetic:
+        data["Y_train_gen"], _ = synthetic_power_data(data, "X_train")
+        data["Y_test_gen"], _ = synthetic_power_data(data, "X_test")
+
     # ---- model ----
+    start_time = time.time()
     model = build_model(model_cfg, data)
 
     if model_cfg.backend == "torch":
         # ---- training ----
-        if model_cfg.params.quantiles is None:
-            quantiles = torch.linspace(0, 1, 51)
+        if model_cfg.params.num_quantiles is not None:
+            quantiles = torch.linspace(0, 1, model_cfg.params.num_quantiles)
         else:
-            quantiles = torch.tensor(model_cfg.params.quantiles)
+            quantiles = torch.linspace(0, 1, 51)
 
-        model, losses = train_torch(
+        model, losses, checkpoint_name = train_torch(
             model=model,
             data=data,
             quantiles=quantiles,
@@ -108,7 +110,7 @@ def run_single_experiment(exp_path: str) -> dict:
         runtime = time.time() - start_time
 
         # ---- evaluation ----
-        metrics, _ = evaluate_model(
+        metrics, _, _ = evaluate_model(
             model=model,
             data=data,
             quantiles=quantiles,
@@ -117,32 +119,11 @@ def run_single_experiment(exp_path: str) -> dict:
 
     elif model_cfg.backend == "numpyro":
         rng_key, rng_key_pred = random.split(random.PRNGKey(0))
-        if model_cfg.sampler == "vi":
-            # ---- optimize ----
-            rng_key, rng_key_svi = random.split(rng_key)
-            guide = AutoDiagonalNormal(model)  # TODO: better guide?
-            svi_result = run_svi(
-                model,
-                data["X_train"],
-                data["Y_train_gen"],
-                rng_key_svi,
-                guide,
-            )
-
-            runtime = time.time() - start_time
-
-            # ---- evaluation ----
-            metrics, _, _, _, _, _ = evaluate_numpyro(
-                model=model,
-                rng_key_predict=rng_key_pred,
-                data=data,
-                model_cfg=model_cfg,
-                svi_params=svi_result.params,
-            )
-
-        elif model_cfg.sampler == "mcmc":
+        if model_cfg.sampler == "mcmc":
             # ---- sample ----
-            samples, _, _ = sample_numpyro(model, data, model_cfg, data_cfg, rng_key)
+            samples, _, _, checkpoint_name = sample_numpyro(
+                model, data, model_cfg, data_cfg, rng_key
+            )
             runtime = time.time() - start_time
 
             # ---- evaluation ----
@@ -153,10 +134,14 @@ def run_single_experiment(exp_path: str) -> dict:
                 model_cfg=model_cfg,
                 samples=samples,
             )
+        else:
+            raise ValueError(f"Unknown sampler: {model_cfg.sampler}")
 
     # ---- result row ----
     result = {
-        "experiment": experiment_name,
+        "experiment": (
+            experiment_name if not synthetic else experiment_name + " synthetic"
+        ),
         "status": "success",
         "rmse_median": float(metrics["rmse_median"]),
         "crps": float(metrics["crps"]),
@@ -165,6 +150,7 @@ def run_single_experiment(exp_path: str) -> dict:
         "runtime_sec": round(runtime, 2),
         "loss": losses[-1] if model_cfg.backend == "torch" else None,
         "error": "",
+        "checkpoint": checkpoint_name,
     }
 
     return result
@@ -187,6 +173,12 @@ def main():
         default=EXPERIMENTS,
         help="config file paths for experiments",
     )
+    parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="Use synthetic target",
+    )
+
     args = parser.parse_args()
 
     for exp_path in args.exp_path:
@@ -194,14 +186,15 @@ def main():
         print(f"Starting: {exp_path}")
 
         try:
-            result = run_single_experiment(exp_path)
+            result = run_single_experiment(exp_path, args.synthetic)
 
-            print("Finished successfully")
-            print(f"  RMSE (median): {result['rmse_median']:.3f}")
-            print(f"  CRPS: {result['crps']:.3f}")
-            print(f"  Coverage 2.5–97.5%: {result['coverage_025_975']:.3f}")
-            print(f"  Coverage 0–50%: {result['coverage_0_50']:.3f}")
-            print(f"  Runtime: {result['runtime_sec']} s")
+            print("\nFinished successfully")
+            print(f"   Runtime: {result['runtime_sec']} s")
+            print("\n Validation statistics:")
+            print(f"   RMSE val: {result['rmse_median']:.3f}")
+            print(f"   CRPS val: {result['crps']:.3f}")
+            print(f"   Coverage 2.5–97.5 val: {result['coverage_025_975']:.3f}")
+            print(f"   Coverage 0–50 val: {result['coverage_0_50']:.3f}")
 
         except Exception as e:
             print("Experiment failed")
@@ -217,6 +210,7 @@ def main():
                 "runtime_sec": "",
                 "loss": "",
                 "error": str(e),
+                "checkpoint": "",
             }
 
         append_to_summary(result)
