@@ -1,57 +1,29 @@
-import argparse
 import sys
 
 sys.path.append("../src")
 
+import argparse
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
 
 import properscoring as ps
 
 from configs.load_config import load_config
-
 from data_processing.load import (
     load_dataset,
     load_windpower,
     load_evaluation_forecast_data,
     load_scaler_params,
 )
-
-from data_processing.utils import (
-    load_torch_model,
-    load_checkpoint,
-)
-
-from data_processing.synthetic_data import synthetic_power_data
-
-from models.build import build_model
-
 from training.evaluate import (
-    test_QR,
-    test_BNN,
-    evaluate_model,
-    evaluate_numpyro_on_train_set,
-    evaluate_numpyro,
     test_BNN_new,
     test_QR_new,
     crps_from_quantiles,
-)
-
-from training.plot import (
-    plot_qr_hdi_prediction_simple,
-    plot_qr_prediction_ensemble,
-    plot_bnn_gamma_combined,
-    extract_quantile_curves,
-    window_plot,
-    agg_weights_plot,
-    calibration_diagnostics,
-    plot_qr_hdi_prediction_lines,
 )
 
 # ============================================================================
@@ -96,7 +68,7 @@ evaluation_dates = [
     "2025-10-03",
 ]
 
-# for shifted baselines, load those dates for the shifted data
+# For shifted baselines, load those dates for the shifted data
 add_evaluation_dates_bl = [
     "2025-09-17",
     "2025-09-18",
@@ -158,8 +130,6 @@ def validate_args(args):
 
 
 def load_data(dataset, split, bidding_zone, model):
-    # path_to_model_cfg = PATH_MODEL_CFG[model](bidding_zone[-1])
-    # model_cfg = load_config(path_to_model_cfg)
 
     if split == "test":
         scaler_data_nowcast = load_scaler_params(
@@ -211,8 +181,7 @@ def predict(model, bidding_zone, data, split):
     return preds, median, pi
 
 
-# TODO: nur für eine bidding zone, nicht average
-def evaluate(model, preds, median, pi, data, split, num_quantiles):
+def evaluate(model, preds, median, data, split, num_quantiles):
 
     target = data[f"Y_{DATA_SPLIT[split]}_gen"]
 
@@ -384,7 +353,6 @@ def main():
             args.model,
             preds,
             median,
-            pi,
             data,
             args.split,
             (
