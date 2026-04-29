@@ -96,6 +96,17 @@ evaluation_dates = [
     "2025-10-03",
 ]
 
+# for shifted baselines, load those dates for the shifted data
+add_evaluation_dates_bl = [
+    "2025-09-17",
+    "2025-09-18",
+    "2025-09-19",
+    "2025-09-20",
+    "2025-09-21",
+    "2025-09-27",
+    "2025-09-28",
+]
+
 # ============================================================================
 # UTILITIES
 # ============================================================================
@@ -121,7 +132,11 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--model", type=str, required=True, choices=["QRNN", "BNN"], help="Model type"
+        "--model",
+        type=str,
+        required=True,
+        choices=["QRNN", "BNN", "shifted", "median"],
+        help="Model type",
     )
 
     parser.add_argument(
@@ -143,8 +158,8 @@ def validate_args(args):
 
 
 def load_data(dataset, split, bidding_zone, model):
-    path_to_model_cfg = PATH_MODEL_CFG[model](bidding_zone[-1])
-    model_cfg = load_config(path_to_model_cfg)
+    # path_to_model_cfg = PATH_MODEL_CFG[model](bidding_zone[-1])
+    # model_cfg = load_config(path_to_model_cfg)
 
     if split == "test":
         scaler_data_nowcast = load_scaler_params(
@@ -152,8 +167,15 @@ def load_data(dataset, split, bidding_zone, model):
             dataset="nowcast",
             dir_path="../checkpoints",
         )
+        if model == "shifted":
+            eval_dates = evaluation_dates + add_evaluation_dates_bl
+            eval_dates.sort()
+
+        else:
+            eval_dates = evaluation_dates
+
         data = load_evaluation_forecast_data(
-            dates=evaluation_dates,
+            dates=eval_dates,
             scaler_params=scaler_data_nowcast["scaler_params"],
             site_scaler_params=scaler_data_nowcast["site_scaler_params"],
             bid_zone=f"ELSPOT {bidding_zone}",
@@ -161,7 +183,9 @@ def load_data(dataset, split, bidding_zone, model):
 
     # Training or validation data
     else:
-        data_cfg = load_config(model_cfg.data.path)
+        data_cfg = load_config(
+            f"../configs/data/nowcast0{bidding_zone[-1]}.yaml"
+        )  # load_config(model_cfg.data.path)
         if dataset == "forecast":
             data_cfg.dataset = "forecast"
             data_cfg.ensemble = SimpleNamespace(members=None, variance=False)
@@ -208,6 +232,86 @@ def evaluate(model, preds, median, pi, data, split, num_quantiles):
         quantiles = torch.linspace(0, 1, num_quantiles)
         errors["crps"] = round(crps_from_quantiles(target, preds, quantiles).item(), 2)
 
+    return errors
+
+
+def evaluate_baselines(model, data, split, bidding_zone):
+    errors = {}
+
+    if model == "shifted":
+        if split == "test":
+            evaluation_dates_d = pd.to_datetime(evaluation_dates)
+            windpower_bz = pd.DataFrame(
+                data["Y_eval_gen"],
+                index=data["index"],
+                columns=[f"ELSPOT {bidding_zone}"],
+            )
+            s = windpower_bz.sort_index()
+            s_hourly = s.asfreq("h")
+            s["lag_3D"] = s_hourly.shift(72)
+            s = s.dropna()
+            s_filtered = s[np.isin(s.index.date, evaluation_dates_d.date)]
+            s_filtered_na = s_filtered.dropna()
+
+        else:
+            windpower = load_windpower("../data/wind_power_per_bidzone.parquet")
+            windpower_bz = pd.DataFrame(windpower[f"ELSPOT {bidding_zone}"])
+            s = windpower_bz.sort_index()
+            s_hourly = s.asfreq("h")
+            timestamps = pd.Index(data[f"X_{DATA_SPLIT[split]}_timestamps"])
+            s_hourly.loc[~s_hourly.index.isin(timestamps)] = np.nan
+            s_filtered = s_hourly.loc[
+                data[f"X_{DATA_SPLIT[split]}_timestamps"][0] : data[
+                    f"X_{DATA_SPLIT[split]}_timestamps"
+                ][-1]
+            ].copy()
+            s_filtered["lag_3D"] = s_filtered.iloc[:, 0].shift(72)
+
+            s_filtered_na = s_filtered.dropna()
+        errors["rmse"] = round(
+            np.sqrt(
+                np.mean(
+                    (s_filtered_na[f"ELSPOT {bidding_zone}"] - s_filtered_na["lag_3D"])
+                    ** 2
+                )
+            ),
+            2,
+        )
+
+        errors["crps"] = round(
+            np.mean(
+                ps.crps_ensemble(
+                    s_filtered_na[f"ELSPOT {bidding_zone}"], s_filtered_na["lag_3D"]
+                )
+            ).item(),
+            2,
+        )
+
+    else:  # model == "median"
+        key = f"Y_{DATA_SPLIT[split]}_gen"
+
+        # Calculate median on training set
+        data_cfg_bl = load_config(f"../configs/data/nowcast0{bidding_zone[-1]}.yaml")
+        data_bl = load_dataset(data_cfg_bl)
+        median_pred = np.median(data_bl["Y_train_gen"])
+
+        errors["rmse"] = round(
+            np.sqrt(
+                np.mean(
+                    (data[key] - np.broadcast_to(median_pred, data[key].shape)) ** 2
+                )
+            ).item(),
+            2,
+        )
+        errors["crps"] = round(
+            np.mean(
+                ps.crps_ensemble(
+                    data[key],
+                    np.broadcast_to(median_pred, data[key].shape),
+                )
+            ).item(),
+            2,
+        )
     return errors
 
 
@@ -271,25 +375,29 @@ def main():
     # Step 1: Load data
     data = load_data(args.dataset, args.split, args.bidding_zone, args.model)
 
-    # Step 2: Load model
-    preds, median, pi = predict(args.model, args.bidding_zone, data, args.split)
+    if args.model in ["QRNN", "BNN"]:
+        # Step 2: Load model
+        preds, median, pi = predict(args.model, args.bidding_zone, data, args.split)
 
-    # Step 3: Run evaluation
-    results = evaluate(
-        args.model,
-        preds,
-        median,
-        pi,
-        data,
-        args.split,
-        (
-            load_config(
-                PATH_MODEL_CFG[args.model](args.bidding_zone[-1])
-            ).params.num_quantiles
-            if args.model == "QRNN"
-            else None
-        ),
-    )
+        # Step 3: Run evaluation
+        results = evaluate(
+            args.model,
+            preds,
+            median,
+            pi,
+            data,
+            args.split,
+            (
+                load_config(
+                    PATH_MODEL_CFG[args.model](args.bidding_zone[-1])
+                ).params.num_quantiles
+                if args.model == "QRNN"
+                else None
+            ),
+        )
+    elif args.model in ["median", "shifted"]:
+        # Step 2 + 3
+        results = evaluate_baselines(args.model, data, args.split, args.bidding_zone)
 
     # Step 4: Save results
     save_result(
