@@ -19,6 +19,24 @@ from training.evaluate import (
     evaluate_model,
     evaluate_numpyro_on_train_set,
 )
+import sys
+
+sys.path.append("../src")
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+import arviz as az
+
+
+from data_processing.load import load_dataset
+from data_processing.utils import load_torch_model, load_checkpoint
+from models.build import build_model
+from training.evaluate import (
+    evaluate_model,
+    evaluate_numpyro,
+)
 
 
 def plot_qr_prediction_ensemble(
@@ -609,93 +627,179 @@ def plot_posterior_predictive_vs_likelihood(
     plt.show()
 
 
+# def plot_posterior_predictive_family(
+#     predictive,
+#     model_cfg,
+#     data,
+#     t,
+#     hdi=None,
+#     n_plot=200,
+#     bins=30,
+# ):
+
+#     Y_true = (
+#         data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
+#     )
+#     model_name = model_cfg.name.lower()
+
+#     # --- Posterior predictive samples ---
+#     y_samples = np.asarray(predictive["Y"][:, t])
+
+#     # --- X-range (robust to long tails) ---
+#     xmax = float(np.quantile(y_samples, 0.995))
+#     x = np.linspace(0, xmax, 400)
+
+#     # --- Likelihood-specific parameters ---
+#     if "gamma" in model_name:
+#         alpha_samples = np.asarray(predictive["alpha"][:, t])
+#         mu_samples = np.asarray(predictive["mu"][:, t])
+
+#         alpha_mean = float(alpha_samples.mean())
+#         mu_mean = float(mu_samples.mean())
+#         rate_mean = alpha_mean / mu_mean
+
+#         def pdf_fn(a, m):
+#             return np.asarray(
+#                 np.exp(dist.Gamma(concentration=a, rate=a / m).log_prob(np.asarray(x)))
+#             )
+
+#         pdf_mean = np.asarray(
+#             np.exp(
+#                 dist.Gamma(concentration=alpha_mean, rate=rate_mean).log_prob(
+#                     np.asarray(x)
+#                 )
+#             )
+#         )
+
+#         xlabel = "Power output (MW)"
+#         family_label = "Posterior Gamma samples"
+#         mean_label = f"Mean Gamma PDF\n(α={alpha_mean:.2f}, μ={mu_mean:.2f})"
+
+#     elif "beta" in model_name:
+#         alpha_samples = np.asarray(predictive["alpha"][:, t])
+#         beta_samples = np.asarray(predictive["beta"][:, t])
+
+#         alpha_mean = float(alpha_samples.mean())
+#         beta_mean = float(beta_samples.mean())
+
+#         def pdf_fn(a, b):
+#             return np.asarray(np.exp(dist.Beta(a, b).log_prob(np.asarray(x))))
+
+#         pdf_mean = np.asarray(
+#             np.exp(dist.Beta(alpha_mean, beta_mean).log_prob(np.asarray(x)))
+#         )
+
+#         xlabel = "Capacity factor"
+#         family_label = "Posterior Beta samples"
+#         mean_label = f"Mean Beta PDF\n(α={alpha_mean:.2f}, β={beta_mean:.2f})"
+
+#     else:
+#         raise ValueError("model_name must contain 'gamma' or 'beta'")
+
+#     # --- Figure ---
+#     fig, axes = plt.subplots(
+#         1, 2, figsize=(12, 4), constrained_layout=True, sharex=True, sharey=True
+#     )
+
+#     # =========================
+#     # LEFT: predictive samples
+#     # =========================
+#     kde = gaussian_kde(y_samples)
+#     x_kde = np.linspace(0, xmax, 100)
+
+#     if hdi is not None:
+#         hdi_lower, hdi_upper = hdi[t]
+#         axes[0].axvspan(
+#             hdi_lower, hdi_upper, color="#D3D3D3", alpha=0.6, label="95% HDI samples"
+#         )
+#     axes[0].plot(x_kde, kde(x_kde), color="black", lw=2, label="KDE")
+#     axes[0].hist(
+#         y_samples,
+#         bins=bins,
+#         density=True,
+#         alpha=0.8,
+#         color="#A6CEE3",
+#         label="Posterior predictive samples",
+#     )
+
+#     axes[0].set_title(f"Posterior predictive samples (t={t})")
+#     axes[0].set_xlabel(xlabel)
+#     axes[0].set_ylabel("Density")
+#     axes[0].legend()
+
+
+#     # =========================
+#     # Shared decorations
+#     # =========================
+#     if Y_true is not None:
+#         print("Y not none")
+#         y_true = float(Y_true[t])
+
+#         for ax in axes:
+#             ax.axvline(y_true, color="red", lw=2, linestyle="--", label="True Y")
+#             if "gamma" in model_name:
+#                 ax.axvline(
+#                     mu_mean, color="orange", lw=2, linestyle="--", label="Mean mu"
+#                 )
+
+#     # Harmonize y-limits
+#     ymax = max(ax.get_ylim()[1] for ax in axes)
+#     for ax in axes:
+#         ax.set_ylim(0, ymax)
+#         ax.set_xlim(0, xmax)
+#     axes[0].legend()
+#     axes[1].legend()
+#     plt.show()
+
+
 def plot_posterior_predictive_family(
-    predictive,
+    predictives,
     model_cfg,
     data,
     t,
     hdi=None,
-    n_plot=200,
     bins=30,
 ):
-
-    Y_true = (
+    y_true_all = (
         data["Y_test_gen"] if model_cfg.params.target == "gen" else data["Y_test_cf"]
     )
-    model_name = model_cfg.name.lower()
 
-    # --- Posterior predictive samples ---
-    y_samples = np.asarray(predictive["Y"][:, t])
+    # Posterior predictive samples, handle different ensemble members
+    y_samples = []
+    mu_samples = []
+    for predictive in predictives:
+        y_samples.append(np.asarray(predictive["Y"][:, t]))
+        mu_samples.append(np.asarray(predictive["mu"][:, t]))
+    y_samples = np.concatenate(y_samples)
+    mu_samples = np.concatenate(mu_samples)
 
-    # --- X-range (robust to long tails) ---
+    print(y_samples.shape)
+    print(mu_samples.shape)
+
+    mean_pred = float(mu_samples.mean())
+    xlabel = "Power output (MW)"
+    mean_label = r"Mean {\mu}"
+
+    # Robust x-range
     xmax = float(np.quantile(y_samples, 0.995))
-    x = np.linspace(0, xmax, 400)
+    x_kde = np.linspace(0, xmax, 200)
 
-    # --- Likelihood-specific parameters ---
-    if "gamma" in model_name:
-        alpha_samples = np.asarray(predictive["alpha"][:, t])
-        mu_samples = np.asarray(predictive["mu"][:, t])
+    # Figure
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
 
-        alpha_mean = float(alpha_samples.mean())
-        mu_mean = float(mu_samples.mean())
-        rate_mean = alpha_mean / mu_mean
-
-        def pdf_fn(a, m):
-            return np.asarray(
-                np.exp(dist.Gamma(concentration=a, rate=a / m).log_prob(np.asarray(x)))
-            )
-
-        pdf_mean = np.asarray(
-            np.exp(
-                dist.Gamma(concentration=alpha_mean, rate=rate_mean).log_prob(
-                    np.asarray(x)
-                )
-            )
-        )
-
-        xlabel = "Power output (MW)"
-        family_label = "Posterior Gamma samples"
-        mean_label = f"Mean Gamma PDF\n(α={alpha_mean:.2f}, μ={mu_mean:.2f})"
-
-    elif "beta" in model_name:
-        alpha_samples = np.asarray(predictive["alpha"][:, t])
-        beta_samples = np.asarray(predictive["beta"][:, t])
-
-        alpha_mean = float(alpha_samples.mean())
-        beta_mean = float(beta_samples.mean())
-
-        def pdf_fn(a, b):
-            return np.asarray(np.exp(dist.Beta(a, b).log_prob(np.asarray(x))))
-
-        pdf_mean = np.asarray(
-            np.exp(dist.Beta(alpha_mean, beta_mean).log_prob(np.asarray(x)))
-        )
-
-        xlabel = "Capacity factor"
-        family_label = "Posterior Beta samples"
-        mean_label = f"Mean Beta PDF\n(α={alpha_mean:.2f}, β={beta_mean:.2f})"
-
-    else:
-        raise ValueError("model_name must contain 'gamma' or 'beta'")
-
-    # --- Figure ---
-    fig, axes = plt.subplots(
-        1, 2, figsize=(12, 4), constrained_layout=True, sharex=True, sharey=True
-    )
-
-    # =========================
-    # LEFT: predictive samples
-    # =========================
-    kde = gaussian_kde(y_samples)
-    x_kde = np.linspace(0, xmax, 100)
-
+    # HDI
     if hdi is not None:
         hdi_lower, hdi_upper = hdi[t]
-        axes[0].axvspan(
-            hdi_lower, hdi_upper, color="#D3D3D3", alpha=0.6, label="95% HDI samples"
+        ax.axvspan(
+            hdi_lower,
+            hdi_upper,
+            color="#D3D3D3",
+            alpha=0.6,
+            label="95% HDI samples",
         )
-    axes[0].plot(x_kde, kde(x_kde), color="black", lw=2, label="KDE")
-    axes[0].hist(
+
+    # Histogram and KDE
+    ax.hist(
         y_samples,
         bins=bins,
         density=True,
@@ -704,60 +808,23 @@ def plot_posterior_predictive_family(
         label="Posterior predictive samples",
     )
 
-    axes[0].set_title(f"Posterior predictive samples (t={t})")
-    axes[0].set_xlabel(xlabel)
-    axes[0].set_ylabel("Density")
-    axes[0].legend()
+    kde = gaussian_kde(y_samples)
+    ax.plot(x_kde, kde(x_kde), color="black", lw=2, label="KDE")
 
-    # =========================
-    # RIGHT: likelihood family
-    # =========================
-    n_plot = min(n_plot, len(alpha_samples))
+    # True value and posterior mean
+    if y_true_all is not None:
+        y_true = float(y_true_all[t])
+        ax.axvline(y_true, color="red", lw=2, linestyle="--", label="True Y")
 
-    for i in range(n_plot):
-        if "gamma" in model_name:
-            pdf = pdf_fn(alpha_samples[i], mu_samples[i])
-        else:
-            pdf = pdf_fn(alpha_samples[i], beta_samples[i])
+    ax.axvline(mean_pred, color="orange", lw=2, linestyle="--", label=mean_label)
 
-        if i == 0:
-            axes[1].plot(x, pdf, color="#A6CEE3", alpha=0.3, label=family_label)
-        else:
-            axes[1].plot(x, pdf, color="#A6CEE3", alpha=0.3)
+    # Formatting
+    ax.set_title(f"Posterior predictive samples (t={t})")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Density")
+    ax.set_xlim(0, xmax)
+    ax.legend()
 
-    axes[1].plot(
-        x,
-        pdf_mean,
-        color="black",
-        lw=2,
-        label=mean_label,
-    )
-
-    axes[1].set_title(f"Posterior likelihood family (t={t})")
-    axes[1].set_xlabel(xlabel)
-    axes[1].legend()
-
-    # =========================
-    # Shared decorations
-    # =========================
-    if Y_true is not None:
-        print("Y not none")
-        y_true = float(Y_true[t])
-
-        for ax in axes:
-            ax.axvline(y_true, color="red", lw=2, linestyle="--", label="True Y")
-            if "gamma" in model_name:
-                ax.axvline(
-                    mu_mean, color="orange", lw=2, linestyle="--", label="Mean mu"
-                )
-
-    # Harmonize y-limits
-    ymax = max(ax.get_ylim()[1] for ax in axes)
-    for ax in axes:
-        ax.set_ylim(0, ymax)
-        ax.set_xlim(0, xmax)
-    axes[0].legend()
-    axes[1].legend()
     plt.show()
 
 
@@ -1280,3 +1347,183 @@ def plot_qr_hdi_prediction_lines(
     ax.legend(by_label.values(), by_label.keys())
 
     return fig, ax
+
+
+def cdf_comparison_plot(
+    t, model_cfg_BNN, model_cfg_QRNN, data_cfg, file_name_BNN, file_name_QRNN
+):
+
+    # DATA
+    data_cfg.dataset = "forecast"
+    data_cfg.ensemble = SimpleNamespace(members=None, variance=False)
+    data = load_dataset(data_cfg)
+
+    # EVALUATION of BNN and QRNN for all ensemble members
+    y_pred_list_BNN = []
+    y_pred_list_QRNN = []
+
+    for member in range(15):
+
+        quantiles = torch.linspace(0, 1, model_cfg_QRNN.params.num_quantiles)
+
+        # QRNN
+        model_QRNN, checkpoint_QRNN = load_torch_model(
+            file_name=file_name_QRNN, quantiles=quantiles
+        )
+
+        _, y_pred_QRNN, _ = evaluate_model(
+            model=model_QRNN,
+            data=data,
+            quantiles=quantiles,
+            model_cfg=checkpoint_QRNN["model_cfg"],
+            member=member,
+        )
+        y_pred_list_QRNN.append(y_pred_QRNN)
+
+        # BNN
+        checkpoint_BNN = load_checkpoint(file_name=file_name_BNN)
+        model_BNN = build_model(checkpoint_BNN["model_cfg"], data)
+        _, y_pred_BNN, _, _, _, _ = evaluate_numpyro(
+            model=model_BNN,
+            samples=checkpoint_BNN["samples"],
+            rng_key_predict=checkpoint_BNN["rng_key_predict"],
+            data=data,
+            model_cfg=checkpoint_BNN["model_cfg"],
+            member=member,
+        )
+
+        y_pred_list_BNN.append(y_pred_BNN)
+
+    # AGGREGATE ensemble predictions
+    # QRNN
+    ensemble = torch.stack(y_pred_list_QRNN, dim=0)  # [M, N, Q]
+    ensemble_mean = torch.mean(ensemble, dim=0)  # [N, Q]
+
+    quantiles = torch.linspace(0, 1, model_cfg_QRNN.params.num_quantiles)
+
+    q5_idx = torch.argmin(torch.abs(quantiles - 0.5)).item()
+    q025_idx = torch.argmin(torch.abs(quantiles - 0.025)).item()
+    q975_idx = torch.argmin(torch.abs(quantiles - 0.975)).item()
+
+    qrnn_cdf_x = ensemble_mean[t].numpy()
+    qrnn_cdf_y = quantiles.numpy()
+
+    qrnn_median = ensemble_mean[t][q5_idx].item()
+    qrnn_lower = ensemble_mean[t][q025_idx].item()
+    qrnn_upper = ensemble_mean[t][q975_idx].item()
+
+    # BNN
+    y_samples = np.concatenate(y_pred_list_BNN, axis=0)[:, t]
+
+    def compute_ecdf(samples):
+        samples = np.sort(np.asarray(samples))
+        n = len(samples)
+        y = np.arange(1, n + 1) / n
+        return samples, y
+
+    x_ecdf, F_ecdf = compute_ecdf(y_samples)
+
+    hdi_lower, hdi_upper = az.hdi(y_samples, hdi_prob=0.95)
+    bnn_median = np.median(y_samples)
+
+    # Observed value
+    y_true = float(data["Y_test_gen"][t])
+
+    # PLOT
+    # Shared x-limits
+    x_min = min(qrnn_cdf_x.min(), x_ecdf.min(), y_true, qrnn_lower, hdi_lower)
+    x_max = max(qrnn_cdf_x.max(), x_ecdf.max(), y_true, qrnn_upper, hdi_upper)
+
+    _, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True, constrained_layout=True)
+
+    # Left: QRNN
+    axes[0].fill_betweenx(
+        y=[0, 1],
+        x1=qrnn_lower,
+        x2=qrnn_upper,
+        color="#A6CEE3",
+        alpha=0.3,
+        label="95% PI",
+    )
+
+    axes[0].plot(
+        qrnn_cdf_x,
+        qrnn_cdf_y,
+        lw=1.5,
+        color="black",
+        label="CDF",
+    )
+
+    axes[0].axvline(
+        qrnn_median,
+        color="orange",
+        lw=1,
+        linestyle="--",
+        label="Median",
+    )
+
+    axes[0].axvline(
+        y_true,
+        color="red",
+        lw=1,
+        linestyle="--",
+        label="Observed y",
+    )
+
+    axes[0].set_title("QRNN")
+    axes[0].set_xlabel("y")
+    axes[0].set_ylabel("F(y)")
+    axes[0].set_xlim(x_min, x_max)
+    axes[0].set_ylim(0, 1)
+    axes[0].legend()
+
+    # Right: BNN
+    axes[1].fill_betweenx(
+        y=[0, 1],
+        x1=hdi_lower,
+        x2=hdi_upper,
+        color="#A6CEE3",
+        alpha=0.3,
+        label="95% HDI",
+    )
+
+    axes[1].step(
+        x_ecdf,
+        F_ecdf,
+        where="post",
+        lw=1.5,
+        color="black",
+        label="Empirical CDF",
+    )
+
+    axes[1].axvline(
+        bnn_median,
+        color="orange",
+        lw=1,
+        linestyle="--",
+        label="Median",
+    )
+
+    axes[1].axvline(
+        y_true,
+        color="red",
+        lw=1,
+        linestyle="--",
+        label="Observed y",
+    )
+
+    axes[1].set_title("BNN")
+    axes[1].set_xlabel("y")
+    axes[1].set_xlim(x_min, x_max)
+    axes[1].legend()
+
+    axes[0].grid(alpha=0.3)
+    axes[1].grid(alpha=0.3)
+    date = data["X_test_timestamps"][t]
+    print(date)
+
+    plt.suptitle(
+        f"Comparison of CDF functions at {date.strftime("%Y-%m-%d")} (validation set, {model_cfg_BNN.data.bid_zone})",
+        fontsize=16,
+    )
+    # plt.savefig(f"../plots/compare_cdfs_{model_cfg_BNN.data.bid_zone}.pdf")
