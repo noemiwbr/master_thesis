@@ -1,39 +1,140 @@
-### **Project Description**
+# Probabilistic Forecasting of Norwegian Wind Power Two Days Ahead
 
-**Bayesian Framework for Wind Power Forecasting with Uncertainty Estimation**
+## Abstract
 
-**Purpose**
+Accurate and well-calibrated probabilistic wind power forecasts are essential for power system operation, particularly for day-ahead planning. In this work,
+we present a probabilistic approach for two-day-ahead wind power forecasting for Norwegian bidding zones, with hourly resolution for the target day. It extends the WindAI 2025 competition by a focus on uncertainty quantification.
 
-The purpose of this thesis is to develop a model for forecasting the total wind-power production for each Norwegian bidding zone, including quantified uncertainty estimates, two days ahead at an hourly resolution for 24 hours. Reliable forecasts are essential for Statnett, the Norwegian transmission system operator responsible for maintaining balance and stability in the national power grid. Accurate and uncertainty-aware forecasts support better planning, decision-making, and efficient energy management.
+We formulate the task as a snapshot-to-snapshot regression problem and train separate models for each bidding zone. During training, the models use observed weather data to learn a mapping from local, wind-park-specific weather conditions to aggregated wind power generation at the bidding zone level without temporal offsets.
+For two-day-ahead forecasting, this learned mapping is applied to the numerical weather prediction (NWP) ensemble forecast for the 24-hour horizon, starting two days ahead. The models map these predicted weather conditions to corresponding power generation, yielding a probabilistic wind power forecast of aggregated wind power over the forecast horizon. The final model predictions combine the uncertainty of weather forecasts and the predictive model uncertainty.
 
-**Background**
+We compare a Bayesian Neural Network (BNN) and a Quantile Regression Neural Network (QRNN) with non-crossing quantiles, and evaluate performance using Root Mean Squared Error (RMSE) and Continuous Ranked Probability Score (CRPS).
 
-Earlier this year, Statnett and SINTEF organized the “WindAI – Forecasting wind power production” competition, aiming to develop more accurate and robust models for forecasting wind-power production in Norway. The competition produced a variety of strong approaches, demonstrating valuable design choices such as feature engineering techniques and handling of installed capacity changes.
-This thesis will integrate selected components and methodological ideas from these approaches within a coherent Bayesian framework. The Bayesian perspective enables explicit treatment of uncertainty and robustness, both of which are critical for operational forecasting.
+Both models achieve largely comparable performance, while the BNN provides better-calibrated predictive distributions and slightly improved overall RMSE and CRPS values at significantly higher computational cost.
+Based on these findings, we propose a practical two-stage workflow. First, a QRNN is used as an efficient proxy for model development and tuning, followed by a BNN to produce the final probabilistic predictions.
 
-**Goal**
+## Models
 
-The goal is to design and implement a **probabilistic wind-power forecasting model** that:
+We implement:
 
-- Predicts wind-power production exactly two days ahead at an hourly resolution for 24 hours,
-- Provides well-calibrated uncertainty estimates,
-- Is robust to changes such as wind-park capacity adjustments and the commissioning of new wind parks, and
-- Is feasible for deployment at Statnett.
+- BNN with Gamma likelihood
+- QRNN for simulaneous quantile prediction (non-crossing)
 
-**Work Plan**
+## Project Structure
 
-Step 1: Preparation and Exploration
+`configs/`
 
-- **1a Familiarization:** Review the WindAI competition models and datasets to understand their structure, features, and performance characteristics. Conduct a brief literature review on wind-power forecasting methods.
-- **1b Bayesian framework setup:** Develop a simple baseline model within a Bayesian framework and study relevant literature on probabilistic forecasting and uncertainty estimation.
-- **1c Evaluation metrics:** Identify suitable metrics to assess model performance, including measures of accuracy, uncertainty calibration, and robustness to changes in input data.
+- Dataset and Model Configuration files
 
-Step 2: **Model Design**
+`data/`
 
-- Select and integrate relevant components or ideas from the _WindAI_ competition models (e.g., use of unavailability messages, capacity factor modeling, and feature representations). Design an overall model architecture within the Bayesian framework.
+- Datasets: obtained from https://archive.sigma2.no/dataset/windai2025
 
-Step 3: **Training and Evaluation**
+`notebooks/`
 
-- Train and compare the developed models, combining insights from Step 1 and Step 2. Evaluate performance in terms of both predictive accuracy and uncertainty estimation quality.
+- BNN_analysis.ipynb: BNN specific analysis (sample experimentsm posterior distribution,...)
+- evaluation.ipynb: evaluates model and plots
+- plausibility_checks.ipynb: polar plot plausbility check
+- representative_test_set.ipynb: new representative test set (flexible length, and without Storm Amy), not used in thesis
 
-_Note: Steps 2 and 3 will follow an iterative process_
+`scripts/`
+
+- run_experiments.py: train models
+- run_evaluation.py
+- run_plots.py
+- run_all_evaluations_plots.sh: runs model evaluations and plotting function for all models, weather dataset, splits and bidding zones
+
+`src/`
+
+- All source code for models, training, sampling, evaulating, plotting
+
+## Datasets
+
+### Weather data
+
+Available for the wind park locations
+
+`Nowcast`: best estimate of the current atmospheric state, not ahead of time
+
+`Forecast`: predictions, ensemble members represent different future weather scenarios
+
+### Wind power data
+
+`Windpower`: observed generated wind power for each bidding zone (NO1-NO4)
+
+`Meta data`: for mapping of wind parks to bidding zones, max. theoretic capacity per park,..
+
+## Installation
+
+```bash
+git clone https://github.com/noemiwbr/master_thesis.git
+conda env create -f environment.yml -n masters
+conda activate masters
+```
+
+## Usage
+
+### Training
+
+Run training with optional experiment config paths:
+
+```bash
+cd master_thesis/scripts
+python run_experiments.py [--exp_path PATH [PATH ...]] [--synthetic]
+```
+
+- `--exp_path` (optional): One or more paths to experiment config files
+- `--synthetic` (optional): Use synthetic target data
+
+Example:
+
+```bash
+cd master_thesis/scripts
+python run_experiments.py \
+  --exp_path "../configs/model/bnn_gamma_01.yaml" \
+             "../configs/model/qrnn_01.yaml"
+```
+
+If no `--exp_path` is provided, default configurations will be used.
+
+### Evaluation & Plotting
+
+Run evaluation and generate plots for specified model, dataset, split and bidding zone.
+
+```bash
+python scripts/run_evaluation.py \
+  --dataset DATASET \
+  --split SPLIT \
+  --model MODEL \
+  --bidding_zone ZONE
+
+python scripts/run_plots.py \
+  --dataset DATASET \
+  --split SPLIT \
+  --model MODEL \
+  --bidding_zone ZONE
+```
+
+**Required arguments:**
+
+- `--dataset`: one of `forecast`, `nowcast`
+- `--split`: one of `train`, `validation`, `test`
+- `--model`: one of `QRNN`, `BNN`, `shifted`, `median`
+- `--bidding_zone`: one of `NO1`, `NO2`, `NO3`, `NO4`
+
+Example:
+
+```bash
+python scripts/run_evaluation.py \
+  --dataset forecast \
+  --split test \
+  --model BNN \
+  --bidding_zone NO1
+```
+
+Run evaluation and generate plots for all configurations at once:
+
+```bash
+chmod +x run_all_evaluations_plots.sh
+./run_all_evaluations_plots.sh
+```
