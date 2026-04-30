@@ -3,27 +3,27 @@ import sys
 sys.path.append("../src")
 
 import argparse
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import torch
-from pathlib import Path
-import pandas as pd
-
 import properscoring as ps
+import torch
 
 from configs.load_config import load_config
+
 from data_processing.load import (
     load_dataset,
-    load_windpower,
     load_evaluation_forecast_data,
     load_scaler_params,
+    load_windpower,
 )
+
 from training.evaluate import (
-    test_BNN_new,
-    test_QR_new,
     crps_from_quantiles,
+    test_BNN_all,
+    test_QR_all,
 )
 
 # ============================================================================
@@ -45,8 +45,8 @@ CHECKPOINTS = {
     },
 }
 PATH_MODEL_CFG = {
-    "BNN": lambda i: f"../configs/model/bnn_gen_model_nowcast_0{i}_weighted.yaml",
-    "QRNN": lambda i: f"../configs/model/torch_model_quantile_0{i}.yaml",
+    "BNN": lambda i: f"../configs/model/bnn_gamma_0{i}.yaml",
+    "QRNN": lambda i: f"../configs/model/qrnn_0{i}.yaml",
 }
 
 DATA_SPLIT = {
@@ -168,12 +168,12 @@ def load_data(dataset, split, bidding_zone, model):
 def predict(model, bidding_zone, data, split):
     filename = CHECKPOINTS[model][f"ELSPOT {bidding_zone}"]
     if model == "BNN":
-        preds, median, pi = test_BNN_new(
+        _, preds, median, pi = test_BNN_all(
             file_name=filename, eval_data=data, split=DATA_SPLIT[split]
         )
 
     else:
-        preds, median, pi = test_QR_new(
+        _, preds, median, pi = test_QR_all(
             file_name=filename,
             eval_data=data,
             split=DATA_SPLIT[split],
@@ -287,6 +287,7 @@ def evaluate_baselines(model, data, split, bidding_zone):
 def save_result(
     csv_path,
     model,
+    dataset,
     split,
     bidding_zone,
     rmse,
@@ -298,6 +299,7 @@ def save_result(
         [
             {
                 "model": model,
+                "dataset": dataset,
                 "split": split,
                 "bidding_zone": bidding_zone,
                 "rmse": rmse,
@@ -313,6 +315,7 @@ def save_result(
         mask = (
             (df["model"] == model)
             & (df["split"] == split)
+            & (df["dataset"] == dataset)
             & (df["bidding_zone"] == bidding_zone)
         )
 
@@ -322,7 +325,7 @@ def save_result(
     else:
         df = new_row
 
-    df = df.sort_values(["model", "split", "bidding_zone"])
+    df = df.sort_values(["model", "dataset", "split", "bidding_zone"])
     df.to_csv(csv_path, index=False)
 
 
@@ -371,6 +374,7 @@ def main():
     save_result(
         csv_path="results/evaluation_results.csv",
         model=args.model,
+        dataset=args.dataset,
         split=args.split,
         bidding_zone=args.bidding_zone,
         rmse=results["rmse"],

@@ -1,12 +1,14 @@
+import sys
+
+sys.path.append("../src")
+
 import time
 import csv
 import traceback
 from pathlib import Path
 import torch
 import jax
-import sys
 
-sys.path.append("../src")
 from configs.load_config import load_config
 from data_processing.load import load_dataset
 from data_processing.synthetic_data import synthetic_power_data
@@ -20,9 +22,10 @@ import argparse
 # CONFIGURATION
 # ============================================================================
 
+# Default experiments
 EXPERIMENTS = [
-    "../configs/model/torch_model_quantile_04.yaml",
-    "../configs/model/bnn_gen_model_nowcast_01_weighted.yaml",
+    "../configs/model/qrnn_04.yaml",
+    "../configs/model/bnn_gamma_04.yaml",
 ]
 
 RESULTS_DIR = Path("results")
