@@ -1,0 +1,21 @@
+backend: torch
+name: WindPower_QRNN_weighted
+experiment_name: QRNN NO1
+data:
+  path: ../configs/data/nowcast01.yaml
+  bid_zone: ELSPOT NO1
+
+params:
+  quantiles:
+  num_quantiles: 41
+  target: gen
+
+training:
+  optimizer: adam
+  lr: 0.01
+  num_steps: 5000
+  loss: quantile_loss_weighted
+
+evaluation:
+  dates:
+  path:

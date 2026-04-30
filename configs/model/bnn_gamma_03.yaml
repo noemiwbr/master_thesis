@@ -1,0 +1,16 @@
+backend: numpyro
+sampler: mcmc
+name: windpower_BNN_gamma_weighted
+experiment_name: Gamma weighted NO3
+
+data:
+  path: ../configs/data/nowcast03.yaml
+  bid_zone: ELSPOT NO3
+
+args:
+  num_warmup: 100
+  num_samples: 150
+  num_chains: 2
+
+params:
+  target: gen
