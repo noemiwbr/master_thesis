@@ -1,4 +1,4 @@
-# Probabilistic Forecasting of Norwegian Wind Power Two Days Ahead
+# Probabilistic Forecasting of Norwegian Wind Power Generation Two Days Ahead
 
 ## Abstract
 
