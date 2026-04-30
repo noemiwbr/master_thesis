@@ -3,18 +3,18 @@ import sys
 sys.path.append("../src")
 
 from models.model import (
-    WindPowerQuantile_weighted,
-    model_mw_gamma_extended,
+    WindPower_QRNN_weighted,
+    windpower_BNN_gamma_weighted,
 )
 import numpy as np
 
 # Registries
 TORCH_MODELS = {
-    "WindPowerQuantile_weighted": WindPowerQuantile_weighted,
+    "WindPower_QRNN_weighted": WindPower_QRNN_weighted,
 }
 
 NUMPYRO_MODELS = {
-    "model_mw_gamma_extended": model_mw_gamma_extended,
+    "windpower_BNN_gamma_weighted": windpower_BNN_gamma_weighted,
 }
 
 

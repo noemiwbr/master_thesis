@@ -7,7 +7,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-class WindPowerQuantile_weighted(nn.Module):
+class WindPower_QRNN_weighted(nn.Module):
     def __init__(
         self,
         num_parks,
@@ -77,7 +77,7 @@ class WindPowerQuantile_weighted(nn.Module):
         return y_q
 
 
-def model_mw_gamma_extended(X, Y=None, nonlin=jax.nn.softplus, eps=1e-6):
+def windpower_BNN_gamma_weighted(X, Y=None, nonlin=jax.nn.softplus, eps=1e-6):
     N, S, F = X.shape
 
     w1 = numpyro.sample("w1", dist.Normal(0.0, 1).expand([F, 16]).to_event(2))

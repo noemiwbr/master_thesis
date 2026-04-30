@@ -15,7 +15,7 @@ from data_processing.utils import (
     QuantileDistribution,
 )
 from models.model import (
-    model_mw_gamma_extended,
+    windpower_BNN_gamma_weighted,
 )
 import torch
 import re
@@ -145,6 +145,111 @@ def evaluate_numpyro(
     return metrics, y_pred, pp_samples, y_pred_median, percentiles.T, hdis
 
 
+def test_BNN_all(file_name, eval_data, split="eval"):
+
+    checkpoint = load_checkpoint(file_name=file_name)
+
+    _, rng_key_predict = random.split(checkpoint["rng_key"])
+    eval_data_x = eval_data[f"X_{split}"]
+
+    # Forecast: use all members
+    preds_list = []
+    if len(eval_data_x.shape) == 4:
+        for member in range(15):
+            eval_data_x = eval_data[f"X_{split}"][:, :, member]
+
+            predictive = Predictive(
+                windpower_BNN_gamma_weighted, checkpoint["samples"]
+            )(rng_key_predict, eval_data_x)
+            preds_list.append(predictive["Y"])
+
+        preds = np.concatenate(preds_list, axis=0)
+    # Nowcast
+    else:
+        predictive = Predictive(windpower_BNN_gamma_weighted, checkpoint["samples"])(
+            rng_key_predict, eval_data_x
+        )
+        preds = predictive["Y"]
+        preds_list.append(preds)
+
+    median = np.percentile(preds, 50, axis=0)
+    hdis = az.hdi(np.expand_dims(preds, axis=0), hdi_prob=0.95).T
+
+    return preds_list, preds, median, hdis
+
+
+def test_QR_all(
+    file_name,
+    eval_data,
+    split="eval",
+):
+
+    model, checkpoint_data = load_torch_model(file_name=file_name)
+    model_cfg = checkpoint_data["model_cfg"]
+
+    if model_cfg.params.num_quantiles is not None:
+        quantiles = np.linspace(0, 1, model_cfg.params.num_quantiles)
+    else:
+        quantiles = np.linspace(0, 1, 51)
+
+    eval_data_x = eval_data[f"X_{split}"]
+
+    # Handle forecast by choosing specified member
+    preds_list = []
+    lower_list = []
+    upper_list = []
+    median_list = []
+    for member in range(15):
+        if len(eval_data[f"X_{split}"].shape) == 4:
+            eval_data_x = eval_data[f"X_{split}"][:, :, member]
+
+        model.eval()
+        with torch.no_grad():
+
+            preds = model(torch.tensor(eval_data_x))  # .numpy()
+
+            preds_list.append(preds)
+
+            lower_list.append(
+                np.array(
+                    [
+                        QuantileDistribution(quantiles, preds[i]).icdf(0.025)
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                    ]
+                )
+            )
+            upper_list.append(
+                np.array(
+                    [
+                        QuantileDistribution(quantiles, preds[i]).icdf(0.975)
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                    ]
+                )
+            )
+
+            median_list.append(
+                np.array(
+                    [
+                        QuantileDistribution(quantiles, preds[i]).icdf(0.5)
+                        for i in range(eval_data[f"Y_{split}_gen"].shape[0])
+                    ]
+                )
+            )
+
+            # Handle Nowcast
+            if len(eval_data[f"X_{split}"].shape) == 3:
+                break
+
+    preds = torch.stack(preds_list).mean(dim=0)
+    median = np.mean(np.stack(median_list, axis=0), axis=0)
+    lower = np.mean(np.stack(lower_list, axis=0), axis=0)
+    upper = np.mean(np.stack(upper_list, axis=0), axis=0)
+
+    percentiles = np.stack([lower, upper], axis=1)
+
+    return preds_list, preds, median, percentiles
+
+
 def test_BNN(file_name, eval_data, member=0, split="eval"):
 
     eval_data_x = eval_data[f"X_{split}"]
@@ -177,7 +282,7 @@ def test_BNN(file_name, eval_data, member=0, split="eval"):
         for _ in range(len(bid_zones))
     ]
     model_mapping = {
-        "model_mw_gamma_extended": model_mw_gamma_extended,
+        "windpower_BNN_gamma_weighted": windpower_BNN_gamma_weighted,
     }
 
     model_name = re.match(r"^(.*?)_\d{4}-\d{2}-\d{2}", file_name).group(1)
@@ -295,7 +400,6 @@ def test_QR(
                 ]
             )
 
-            # TODO: not HDI but percentiles, is naming important of forecast columns?
             forecast_extended[i][["median", "lower", "upper"]] = np.column_stack(
                 [medians, lower, upper]
             )

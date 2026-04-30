@@ -12,7 +12,7 @@ from scipy.stats import gaussian_kde
 import torch
 import pandas as pd
 from models.model import (
-    WindPowerQuantile_weighted,
+    WindPower_QRNN_weighted,
 )
 from data_processing.load import (
     load_weather_forecast_parquet,
@@ -189,7 +189,7 @@ def load_torch_model(
         quantiles = torch.tensor(checkpoint["model_cfg"].params.quantiles)
 
     if model_class_name == "WindPowerQuantile_weighted":
-        model = WindPowerQuantile_weighted(
+        model = WindPower_QRNN_weighted(
             num_parks=num_parks, num_features=num_features, quantiles=quantiles
         )
     else:
