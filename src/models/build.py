@@ -15,6 +15,7 @@ TORCH_MODELS = {
 
 NUMPYRO_MODELS = {
     "windpower_BNN_gamma_weighted": windpower_BNN_gamma_weighted,
+    "model_mw_gamma_extended": windpower_BNN_gamma_weighted,
 }
 
 

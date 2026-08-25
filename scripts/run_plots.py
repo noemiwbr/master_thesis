@@ -20,10 +20,7 @@ from data_processing.load import (
     load_windpower,
 )
 
-from data_processing.utils import (
-    load_checkpoint,
-    load_torch_model,
-)
+from data_processing.utils import load_checkpoint, load_torch_model, save_scaler_params
 
 from models.build import build_model
 
@@ -177,6 +174,16 @@ def load_data(dataset, split, bidding_zone, model):
             data_cfg.ensemble = SimpleNamespace(members=None, variance=False)
         data = load_dataset(data_cfg)
 
+        if data_cfg.dataset == "nowcast" and split == "train":
+            save_scaler_params(
+                scaler_params=data["scaler_params"],
+                site_scaler_params=data["site_scaler_params"],
+                bid_zone=data_cfg.bid_zone,
+                split_time=pd.Timestamp("2025-01-01 00:00:00", tz="CET"),
+                dataset=data_cfg.dataset,
+                dir_path="../checkpoints",
+            )
+
     return data
 
 
@@ -236,7 +243,7 @@ def plot_nn(dataset, model, split, bidding_zone, data, median, pi, preds_list):
                 ),
             )
             plt.savefig(
-                f"../plots/ensemble_{dataset}_{model}_{bidding_zone}_{DATA_SPLIT[split]}.pdf"
+                f"../plots/ensemble_{dataset}_{model}_{bidding_zone}_{DATA_SPLIT[split]}_font.pdf"
             )
             # plt.show()
 
@@ -255,7 +262,7 @@ def plot_nn(dataset, model, split, bidding_zone, data, median, pi, preds_list):
                 split=DATA_SPLIT[split],
             )
             plt.savefig(
-                f"../plots/ensemble_{dataset}_{model}_{bidding_zone}_{DATA_SPLIT[split]}.pdf"
+                f"../plots/ensemble_{dataset}_{model}_{bidding_zone}_{DATA_SPLIT[split]}_font.pdf"
             )
 
     if dataset == "nowcast":
@@ -369,16 +376,16 @@ def plot_nn_val(model, data, bidding_zone, preds):
         learned_weights = checkpoint["samples"]["agg_logits"].mean(0)
 
     # Plot aggregation weights
-    agg_weights_plot(learned_weights, data["sites_meta"], model, bidding_zone)
-    plt.savefig(f"../plots/agg_weights_{model}_{bidding_zone}.pdf")
+    # agg_weights_plot(learned_weights, data["sites_meta"], model, bidding_zone)
+    # plt.savefig(f"../plots/agg_weights_{model}_{bidding_zone}.pdf")
 
-    # Plot RMSE/CRPS on different plotting windows
-    window_plot(data, model_cfg, checkpoint, nn, model)
-    plt.savefig(f"../plots/metrics_windows_{model}_{bidding_zone}.pdf")
+    # # Plot RMSE/CRPS on different plotting windows
+    # window_plot(data, model_cfg, checkpoint, nn, model)
+    # plt.savefig(f"../plots/metrics_windows_{model}_{bidding_zone}.pdf")
 
     # Plot calibration diagnostics
     calibration_diagnostics(data, preds, torch.linspace(0, 1, 41), model, bidding_zone)
-    plt.savefig(f"../plots/calibration_overview_{model}_{bidding_zone}.pdf")
+    plt.savefig(f"../plots/calibration_overview_{model}_{bidding_zone}_font.pdf")
 
 
 # ============================================================================
@@ -417,7 +424,7 @@ def main():
         )
 
         if args.split == "validation" and args.dataset == "forecast":
-            plot_nn_val(args.model, args.data, args.bidding_zone, preds)
+            plot_nn_val(args.model, data, args.bidding_zone, preds)
 
     elif args.model in ["median", "shifted"]:
         # Step 2 + 3

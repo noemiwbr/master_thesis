@@ -89,7 +89,13 @@ def plot_qr_prediction_ensemble(
     df_ensemble_full = df_ensemble.reindex(full_index)
     df_member0_full = df_member0.reindex(full_index)
 
-    plt.figure(figsize=(15, 4), constrained_layout=True)
+    plt.figure(figsize=(7.2*2, 4), constrained_layout=True)
+
+    label_size = 11
+    tick_size = 10
+    title_size = 12
+    legend_size = 10
+
     plt.plot(
         df_member0_full.index[slice(*plot_interval)],
         df_member0_full["Y_true"][slice(*plot_interval)],
@@ -131,10 +137,12 @@ def plot_qr_prediction_ensemble(
         lw=2,
     )
 
-    plt.xlabel("Time")
-    plt.ylabel("Total power (MW)")
-    plt.title(title)
-    plt.legend()
+    plt.xlabel("Time", fontsize=label_size)
+    plt.ylabel("Total power (MW)", fontsize=label_size)
+    plt.title(title, fontsize=title_size)
+    plt.xticks(fontsize=tick_size)
+    plt.yticks(fontsize=tick_size)
+    plt.legend(fontsize=legend_size, ncol=2)
 
     return
 
@@ -1008,7 +1016,12 @@ def plot_qr_hdi_prediction_ensemble_combined(
     full_index_all = pd.date_range(df_all.index.min(), df_all.index.max(), freq="h")
     df_full_all = df_all.reindex(full_index_all)
 
-    plt.figure(figsize=(15, 4))
+    plt.figure(figsize=(7.2*2, 4))
+
+    label_size = 11
+    tick_size = 10
+    title_size = 12
+    legend_size = 10
 
     # Top plot
     plt.plot(
@@ -1052,10 +1065,12 @@ def plot_qr_hdi_prediction_ensemble_combined(
         lw=2,
     )
 
-    plt.ylabel("Total power")
-    plt.xlabel("Time")
-    plt.title(title)
-    plt.legend()
+    plt.ylabel("Total power (MW)", fontsize=label_size)
+    plt.xlabel("Time", fontsize=label_size)
+    plt.title(title, fontsize=title_size)
+    plt.xticks(fontsize=tick_size)
+    plt.yticks(fontsize=tick_size)
+    plt.legend(fontsize=legend_size, ncol=2)
     plt.tight_layout()
 
     return
@@ -1092,15 +1107,21 @@ def calibration_diagnostics(data, preds, quantiles, model_name, bz):
         for t in range(len(Y_true)):
             pits[t] = QuantileDistribution(quantiles, pit_source[t]).cdf(Y_true[t])
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.2))
+
+    label_size = 11
+    tick_size = 10
+    title_size = 11
+    legend_size = 9
 
     # --- Calibration plot ---
     axes[0].plot(quantiles, emp_cov, "o-", label="Empirical")
     axes[0].plot([0, 1], [0, 1], "--", color="gray", label="Ideal")
-    axes[0].set_xlabel("Nominal quantile τ")
-    axes[0].set_ylabel("Empirical coverage")
-    axes[0].set_title("Calibration Curve")
-    axes[0].legend()
+    axes[0].set_xlabel("Nominal quantile τ", fontsize=label_size)
+    axes[0].set_ylabel("Empirical coverage", fontsize=label_size)
+    axes[0].set_title("Calibration Curve", fontsize=title_size)
+    axes[0].tick_params(axis="both", labelsize=tick_size)
+    axes[0].legend(fontsize=legend_size)
     axes[0].grid(True)
 
     # --- PIT histogram ---
@@ -1121,14 +1142,15 @@ def calibration_diagnostics(data, preds, quantiles, model_name, bz):
         lw=1,
         label="Uniform reference",
     )
-    axes[1].set_xlabel("PIT value")
-    axes[1].set_ylabel("Density")
-    axes[1].set_title("PIT Histogram")
-    axes[1].legend()
+    axes[1].set_xlabel("PIT value", fontsize=label_size)
+    axes[1].set_ylabel("Density", fontsize=label_size)
+    axes[1].set_title("PIT Histogram", fontsize=title_size)
+    axes[1].tick_params(axis="both", labelsize=tick_size)
+    axes[1].legend(fontsize=legend_size)
 
     fig.suptitle(
         f"{model_name}: Probabilistic Calibration Diagnostics (validation set, {bz})",
-        fontsize=14,
+        fontsize=12,
     )
 
     plt.tight_layout()
