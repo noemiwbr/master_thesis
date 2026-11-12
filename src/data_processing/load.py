@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import re
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from data_processing.preprocess import (
     filter_bid_zone,
@@ -52,6 +53,61 @@ def load_scaler_params(
         "scaler_params": state["scaler_params"],
         "site_scaler_params": state["site_scaler_params"],
     }
+
+
+def save_scaler_params(
+    scaler_params,
+    site_scaler_params,
+    bid_zone,
+    split_time,
+    dataset="nowcast",
+    dir_path="../checkpoints",
+):
+    os.makedirs(dir_path, exist_ok=True)
+
+    filename = f"scaler_params_{bid_zone.replace(' ', '_')}_{dataset}.pkl"
+    path = os.path.join(dir_path, filename)
+
+    state = {
+        "bid_zone": bid_zone,
+        "dataset": dataset,
+        "split_time": str(split_time),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "scaler_params": scaler_params,
+        "site_scaler_params": site_scaler_params,
+    }
+
+    with open(path, "wb") as f:
+        pickle.dump(state, f)
+
+    print(f"Saved scaler to {path}")
+
+
+def save_scaler_params_if_missing(
+    scaler_params,
+    site_scaler_params,
+    bid_zone,
+    split_time,
+    dataset="nowcast",
+    dir_path="../checkpoints",
+):
+    os.makedirs(dir_path, exist_ok=True)
+
+    filename = f"scaler_params_{bid_zone.replace(' ', '_')}_{dataset}.pkl"
+    path = os.path.join(dir_path, filename)
+
+    if os.path.exists(path):
+        print(f"Scaler already exists: {path}")
+        return
+
+    save_scaler_params(
+        scaler_params=scaler_params,
+        site_scaler_params=site_scaler_params,
+        bid_zone=bid_zone,
+        split_time=split_time,
+        dataset=dataset,
+        dir_path=dir_path,
+    )
 
 
 def load_weather_forecast(path: str):
@@ -332,6 +388,14 @@ def load_and_preprocess_data(
 
     # Scale site metadata
     sites_meta, site_scaler_params = scale_site_metadata(sites_meta_unscaled)
+
+    save_scaler_params_if_missing(
+        scaler_params=scaler_params,
+        site_scaler_params=site_scaler_params,
+        bid_zone=bid_zone,
+        split_time=split_time,
+        dataset="nowcast",
+    )
 
     scaling_result = {
         "df_train_X_scaled": df_train_X_scaled,
