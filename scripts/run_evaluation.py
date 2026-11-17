@@ -180,6 +180,21 @@ def predict(model, bidding_zone, data, split):
         )
     return preds, median, pi
 
+# Mean Absolute Coverage Error (MACE)
+def mace_from_quantiles(target, predictions, quantiles):
+    
+    target = np.asarray(target).reshape(-1)
+    predictions = np.asarray(predictions)
+    quantiles = np.asarray(quantiles)
+
+    assert predictions.shape == (len(target), len(quantiles))
+
+    empirical_coverage = np.mean(
+        target[:, None] <= predictions,
+        axis=0,
+    )
+
+    return np.mean(np.abs(empirical_coverage - quantiles))
 
 def evaluate(model, preds, median, data, split, num_quantiles):
 
@@ -188,19 +203,39 @@ def evaluate(model, preds, median, data, split, num_quantiles):
     errors = {}
     errors["rmse"] = round(np.sqrt(np.mean((median - target) ** 2)).item(), 2)
 
+    
+    quantiles = torch.linspace(0, 1, num_quantiles if num_quantiles else 41)
+
     # Calculate CRPS depending on the model
     if model == "BNN":
 
         errors["crps"] = round(
             np.mean(ps.crps_ensemble(target, preds, axis=0)).item(), 2
         )
+        # BNN predictive samples -> quantile predictions
+        bnn_quantiles = np.quantile(
+            np.asarray(preds),
+            quantiles,
+            axis=0,
+        ).T
+
+        errors["mace"] = round(
+            mace_from_quantiles(target, bnn_quantiles, quantiles).item(),
+            4,
+        )
     else:
         if not isinstance(target, torch.Tensor):
             target = torch.tensor(target, dtype=torch.float32)
 
-        quantiles = torch.linspace(0, 1, num_quantiles)
         errors["crps"] = round(crps_from_quantiles(target, preds, quantiles).item(), 2)
-
+        errors["mace"] = round(
+            mace_from_quantiles(
+                target,
+                preds,
+                quantiles,
+            ).item(),
+            4,
+        )
     return errors
 
 
@@ -292,6 +327,7 @@ def save_result(
     bidding_zone,
     rmse,
     crps,
+    mace,
 ):
     csv_path = Path(csv_path)
 
@@ -304,6 +340,7 @@ def save_result(
                 "bidding_zone": bidding_zone,
                 "rmse": rmse,
                 "crps": crps,
+                "mace": mace,
             }
         ]
     )
@@ -379,11 +416,15 @@ def main():
         bidding_zone=args.bidding_zone,
         rmse=results["rmse"],
         crps=results["crps"],
+        mace=results.get("mace"),
     )
 
     print("Results :")
     print(f"    RMSE: {results["rmse"]}")
     print(f"    CRPS: {results["crps"]}")
+
+    if "mace" in results:
+        print(f"    MACE: {results['mace']:.4f}")
 
     # df = pd.read_csv("results/evaluation_results.csv")
     # wide = df.pivot_table(
