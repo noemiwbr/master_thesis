@@ -34,3 +34,4 @@ for dataset in "${datasets[@]}"; do
     done
   done
 done
+python summarize_overall.py

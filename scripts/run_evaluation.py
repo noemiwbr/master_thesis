@@ -26,6 +26,8 @@ from training.evaluate import (
     test_QR_all,
 )
 
+from data_processing.preprocess import get_installed_capacity
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -129,6 +131,12 @@ def validate_args(args):
         raise ValueError("Forecast does not support train split")
 
 
+def clip_to_capacity(predictions, capacity):
+    if isinstance(predictions, torch.Tensor):
+        return torch.clamp(predictions, min=0, max=capacity)
+
+    return np.clip(np.asarray(predictions), 0, capacity)
+
 def load_data(dataset, split, bidding_zone, model):
 
     if split == "test":
@@ -196,50 +204,62 @@ def mace_from_quantiles(target, predictions, quantiles):
 
     return np.mean(np.abs(empirical_coverage - quantiles))
 
-def evaluate(model, preds, median, data, split, num_quantiles):
+def evaluate(model, preds, median, data, split, num_quantiles, pooled_path=None):
 
     target = data[f"Y_{DATA_SPLIT[split]}_gen"]
 
     errors = {}
-    errors["rmse"] = round(np.sqrt(np.mean((median - target) ** 2)).item(), 2)
+    squared_errors = np.asarray(median - target).reshape(-1) ** 2
+    errors["rmse"] = round(float(np.sqrt(np.mean(squared_errors))), 2)
 
     
     quantiles = torch.linspace(0, 1, num_quantiles if num_quantiles else 41)
+    # Exclude the 0 and 1 quantiles for MACE
+    mace_quantiles = quantiles[1:-1]
 
     # Calculate CRPS depending on the model
     if model == "BNN":
 
-        errors["crps"] = round(
-            np.mean(ps.crps_ensemble(target, preds, axis=0)).item(), 2
-        )
+        crps_values = np.asarray(ps.crps_ensemble(target, preds, axis=0)).reshape(-1)
+        errors["crps"] = round(float(np.mean(crps_values)), 2)
         # BNN predictive samples -> quantile predictions
         bnn_quantiles = np.quantile(
             np.asarray(preds),
-            quantiles,
+            mace_quantiles,
             axis=0,
         ).T
 
         errors["mace"] = round(
-            mace_from_quantiles(target, bnn_quantiles, quantiles).item(),
+            mace_from_quantiles(target, bnn_quantiles, mace_quantiles.numpy()).item(),
             4,
         )
     else:
         if not isinstance(target, torch.Tensor):
             target = torch.tensor(target, dtype=torch.float32)
 
-        errors["crps"] = round(crps_from_quantiles(target, preds, quantiles).item(), 2)
+        diff = target.unsqueeze(1) - preds
+        pinball = torch.maximum(quantiles * diff, (quantiles - 1) * diff)
+        crps_values = (2 * torch.trapezoid(pinball, quantiles, dim=1)).detach().cpu().numpy()
+        errors["crps"] = round(float(np.mean(crps_values)), 2)
         errors["mace"] = round(
             mace_from_quantiles(
                 target,
-                preds,
-                quantiles,
+                preds[:, 1:-1],
+                mace_quantiles,
             ).item(),
             4,
         )
+    if pooled_path is not None:
+        pred_quantiles = bnn_quantiles if model == "BNN" else preds[:, 1:-1].detach().cpu().numpy()
+        covered = np.asarray(target).reshape(-1, 1) <= np.asarray(pred_quantiles)
+        np.savez(pooled_path, squared_errors=squared_errors, crps_values=crps_values,
+                 coverage_counts=covered.sum(axis=0), n_observations=len(covered),
+                 quantile_levels=np.asarray(mace_quantiles))
+
     return errors
 
 
-def evaluate_baselines(model, data, split, bidding_zone):
+def evaluate_baselines(model, data, split, bidding_zone, pooled_path=None):
     errors = {}
 
     if model == "shifted":
@@ -272,6 +292,7 @@ def evaluate_baselines(model, data, split, bidding_zone):
             s_filtered["lag_3D"] = s_filtered.iloc[:, 0].shift(72)
 
             s_filtered_na = s_filtered.dropna()
+        baseline_errors = np.asarray(s_filtered_na[f"ELSPOT {bidding_zone}"] - s_filtered_na["lag_3D"])
         errors["rmse"] = round(
             np.sqrt(
                 np.mean(
@@ -299,6 +320,7 @@ def evaluate_baselines(model, data, split, bidding_zone):
         data_bl = load_dataset(data_cfg_bl)
         median_pred = np.median(data_bl["Y_train_gen"])
 
+        baseline_errors = np.asarray(data[key] - median_pred)
         errors["rmse"] = round(
             np.sqrt(
                 np.mean(
@@ -316,6 +338,10 @@ def evaluate_baselines(model, data, split, bidding_zone):
             ).item(),
             2,
         )
+    if pooled_path is not None:
+        np.savez(pooled_path, squared_errors=baseline_errors ** 2,
+                 crps_values=np.abs(baseline_errors))
+
     return errors
 
 
@@ -384,10 +410,20 @@ def main():
     # Step 1: Load data
     data = load_data(args.dataset, args.split, args.bidding_zone, args.model)
 
+    pooled_dir = Path("results/pooled")
+    pooled_dir.mkdir(parents=True, exist_ok=True)
+    pooled_path = pooled_dir / f"{args.model}_{args.dataset}_{args.split}_{args.bidding_zone}.npz"
+
     if args.model in ["QRNN", "BNN"]:
         # Step 2: Load model
         preds, median, pi = predict(args.model, args.bidding_zone, data, args.split)
-
+        num_quantiles = (
+            load_config(
+                PATH_MODEL_CFG[args.model](args.bidding_zone[-1])
+            ).params.num_quantiles
+            if args.model == "QRNN"
+            else None
+        )
         # Step 3: Run evaluation
         results = evaluate(
             args.model,
@@ -395,21 +431,91 @@ def main():
             median,
             data,
             args.split,
-            (
-                load_config(
-                    PATH_MODEL_CFG[args.model](args.bidding_zone[-1])
-                ).params.num_quantiles
-                if args.model == "QRNN"
-                else None
-            ),
+            num_quantiles,
+            pooled_path=pooled_path,
         )
+
+        # Step 4: Capacity clipping experiment
+        installed_capacity = get_installed_capacity(
+            f"ELSPOT {args.bidding_zone}"
+        )
+
+        preds_clipped = clip_to_capacity(
+            preds, installed_capacity
+        )
+        # Recalculate median from clipped predictions
+        if args.model == "BNN":
+            median_clipped = np.median(preds_clipped, axis=0)
+        else:
+            # QRNN: median is the middle quantile
+            median_clipped = preds_clipped[
+                :, preds_clipped.shape[1] // 2
+            ].detach().cpu().numpy()
+
+        results_clipped = evaluate(
+            args.model,
+            preds_clipped,
+            median_clipped,
+            data,
+            args.split,
+            num_quantiles,
+        )
+
+        # Step 5: Save comparison to a separate CSV
+        comparison_rows = []
+
+        for method, metrics in [
+            ("original", results),
+            ("clipped", results_clipped),
+        ]:
+            comparison_rows.append({
+                "model": args.model,
+                "dataset": args.dataset,
+                "split": args.split,
+                "bidding_zone": args.bidding_zone,
+                "method": method,
+                "installed_capacity": installed_capacity,
+                "rmse": metrics["rmse"],
+                "crps": metrics["crps"],
+                "mace": metrics["mace"],
+            })
+
+        csv_path = Path("results/capacity_clipping_results_updated.csv")
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+        new_rows = pd.DataFrame(comparison_rows)
+
+        if csv_path.exists():
+            existing = pd.read_csv(csv_path)
+
+            # Replace existing results for this combination
+            mask = (
+                (existing["model"] == args.model)
+                & (existing["dataset"] == args.dataset)
+                & (existing["split"] == args.split)
+                & (existing["bidding_zone"] == args.bidding_zone)
+            )
+
+            new_rows = pd.concat(
+                [existing.loc[~mask], new_rows],
+                ignore_index=True,
+            )
+
+        new_rows = new_rows.sort_values(
+            ["model", "dataset", "split", "bidding_zone", "method"]
+        )
+        new_rows.to_csv(csv_path, index=False)
+
+        print("\nCapacity clipping comparison:")
+        print(pd.DataFrame(comparison_rows).to_string(index=False))
+
     elif args.model in ["median", "shifted"]:
         # Step 2 + 3
-        results = evaluate_baselines(args.model, data, args.split, args.bidding_zone)
+        results = evaluate_baselines(args.model, data, args.split, args.bidding_zone, pooled_path=pooled_path)
 
     # Step 4: Save results
     save_result(
-        csv_path="results/evaluation_results.csv",
+        csv_path="results/evaluation_results_updated.csv",
         model=args.model,
         dataset=args.dataset,
         split=args.split,
@@ -420,13 +526,13 @@ def main():
     )
 
     print("Results :")
-    print(f"    RMSE: {results["rmse"]}")
-    print(f"    CRPS: {results["crps"]}")
+    print(f"    RMSE: {results['rmse']}")
+    print(f"    CRPS: {results['crps']}")
 
     if "mace" in results:
         print(f"    MACE: {results['mace']:.4f}")
 
-    # df = pd.read_csv("results/evaluation_results.csv")
+    # df = pd.read_csv("results/evaluation_results_updated.csv")
     # wide = df.pivot_table(
     #     index=["model", "split"],
     #     columns="bidding_zone",
