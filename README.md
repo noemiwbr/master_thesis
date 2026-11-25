@@ -102,13 +102,14 @@ If no `--exp_path` is provided, default configurations will be used.
 Run evaluation and generate plots for specified model, dataset, split and bidding zone.
 
 ```bash
-python scripts/run_evaluation.py \
+cd master_thesis/scripts
+python run_evaluation.py \
   --dataset DATASET \
   --split SPLIT \
   --model MODEL \
   --bidding_zone ZONE
 
-python scripts/run_plots.py \
+python run_plots.py \
   --dataset DATASET \
   --split SPLIT \
   --model MODEL \
@@ -125,7 +126,7 @@ python scripts/run_plots.py \
 Example:
 
 ```bash
-python scripts/run_evaluation.py \
+python run_evaluation.py \
   --dataset forecast \
   --split test \
   --model BNN \
